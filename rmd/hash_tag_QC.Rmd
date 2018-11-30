@@ -1,0 +1,176 @@
+---
+title: "Hashtag QC - experiment `r params$experiment`"
+author: "Maarten Slagter"
+# date: "`r format(Sys.time(), '%d %B %Y')`"
+date: "`r Sys.time()`"
+output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    toc: true
+    extra_dependencies: ["flafter"]
+params:
+  experiment: 6493
+  so: NA
+---
+
+```{r init}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(Sys.getenv('r_dir'), 'get_knit_params.R'))
+get('gen_so_c_table', envir = targets_env)()
+load_prereqs(
+  param_grid = subset_param_grid(NH_t_grid, 
+    c('expression', 'neighbourhood')) %>%
+    dplyr::filter(query == '6493') %>%
+    # dplyr::filter(query == '6369') %>%
+    { . }, 
+  idx = 1L)
+```
+
+```{r, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+
+obj_id <- '6071'
+obj_id <- '6072'
+obj_id <- '6073'
+obj_id <- '5310'
+obj_id <- '6369'
+obj_id <- '6600'
+obj_id <- '6743'
+fd_thresh = 2
+evenness_thresh = .5
+mito_thresh = 25
+
+b <- experiment2index(obj_id)
+so <- tar_read(vanilla_so, branch = b)[[1]]
+tar_meta(tar_meta(vanilla_so)$children[[1]][b])$time
+
+sa = tar_read(sc_sample_annotation)[[b]][, c('HT1', 'HT2',
+  'stim_group', 'duration', 'mouse')]
+
+head(so@meta.data)
+
+so@meta.data %>%
+  dplyr::filter(bm_exp == T) %>%
+  # slice(4) %>%
+  head(5) %>%
+  dplyr::select(mouse, condition_name, matches('HT', ignore.case = F))
+
+table(so@meta.data$condition_name)
+
+source('R/HTO_processing.R')
+res <- annotate_double_barcode_stats(so = so, method = 'CLR',
+  hash_tag_annotation = sa)
+
+res@meta.data %>%
+  # dplyr::filter(bm_exp == T) %>%
+  # slice(4) %>%
+  head(5) %>%
+  dplyr::select(mouse, condition_name, matches('HT', ignore.case = F))
+
+res@meta.data %>%
+  dplyr::select(HTO_classification, HT1, HT2)
+
+so@meta.data %>%
+  tally(mouse, condition_name)
+
+if (F) {
+  so@meta.data$N_hashtag_reads <- so@meta.data %>%
+    dplyr::select(matches('HTO|human_Hashtag')) %>%
+    apply(1, sum)
+} else {
+  so@meta.data$N_hashtag_reads <- 
+      so@meta.data$nCount_HTO
+}
+
+## To add the HTO_npositive column
+source(file.path(r_dir, 'HTODemux_mirror.R'))
+so <- HTODemux(so, assay = 'HTO', positive.quantile = 0.99)
+
+# sc_obj_f <- subset(so, N_hashtag_reads > 100)
+# M <- so@meta.data
+```
+
+```{r, warning=FALSE}
+hashtag_evenness_examples <- 
+  purrr::map_dfr(seq(0, 1, by = .1), function(e) {
+    idx <- with(so@meta.data, order((hashtag_evenness - e)^2)[1:2])
+    so[, idx]@meta.data %>%
+      dplyr::select(matches('HTO|human_Hashtag'), hashtag_evenness, fd_cc)
+  }) %>% unique %>% { . }
+
+hashtag_evenness_examples %<>%
+  dplyr::rename_with(.fn = function(x) gsub('(HTO\\d+)_.*', '\\1', x)) %>%
+  dplyr::rename_with(.fn = function(x) gsub('human_Hashtag', 'HTO', x))
+
+hashtag_evenness_examples$hashtag_evenness <-
+  round(hashtag_evenness_examples$hashtag_evenness, 2)
+hashtag_evenness_examples$fd_cc <-
+  round(hashtag_evenness_examples$fd_cc, 2)
+hashtag_evenness_examples$HTO_margin <- NULL
+hashtag_evenness_examples$nFeature_HTO <- NULL
+hashtag_evenness_examples$nCount_HTO <- NULL
+hashtag_evenness_examples$selected <-
+  with(hashtag_evenness_examples, is.na(fd_cc) | fd_cc >= fd_thresh,
+       hashtag_evenness <= evenness_thresh)
+rownames(hashtag_evenness_examples) <- 
+  gsub('\\.\\.\\.\\d+$', '', rownames(hashtag_evenness_examples))
+```
+
+```{r, warning=FALSE}
+library(gridExtra)
+# p1 <- qplot(so@meta.data$hashtag_evenness, bins = 100) +
+#   xlab('Hashtag evennness')
+p1 <- so@meta.data$N_hashtag_reads %>%
+  log10 %>% 
+  qplot(bins = 100) + xlab('log10(# hashtag reads)')
+pacman::p_load('hexbin')
+p2 <- ggplot(mapping = aes(x = hashtag_evenness, y = fd_cc),
+             data = so@meta.data) +
+  # geom_hex(bins = 150) +
+  geom_point(alpha = .1, size = .1, colour = 'grey30') +
+  xlab('Hashtag evennness') +
+  geom_hline(yintercept = fd_thresh) +
+  geom_vline(xintercept = evenness_thresh) +
+  ylab('log2 fold difference\n of winning\n with closest contender') +
+  ggplot2::theme(legend.position = c(.95, .95), 
+    legend.justification = c(1, 1))
+p3 <- ggplot(mapping = aes(x = percent.mt),
+             data = so@meta.data) +
+  stat_ecdf() +
+  xlab('Percentage of reads\nmitochondrial') +
+  ylab('Cumulative fraction of cells')
+median(so@meta.data$percent.mt)
+median(so@meta.data$hashtag_evenness)
+p4 <- ggplot(mapping = aes(x = hashtag_evenness),
+             data = so@meta.data) +
+  stat_ecdf() +
+  xlab('Hashtag evennness') +
+  ylab('Cumulative fraction of cells')
+
+## TO CONSIDER Make heatmap in which these two thresholds are titrated
+p5 <- so@meta.data %>%
+  dplyr::mutate(fd_crit = is.na(fd_cc) | fd_cc >= fd_thresh) %>%
+  dplyr::mutate(
+    evenness_crit = hashtag_evenness <= evenness_thresh) %>%
+  dplyr::mutate(mito_crit = percent.mt <= mito_thresh) %>%
+  dplyr::group_by(fd_crit, evenness_crit, mito_crit) %>%
+  dplyr::count() %>%
+  dplyr::mutate(frac = round(n / nrow(so@meta.data), 3)) %>%
+  { . } %>%
+  tableGrob(theme = gridExtra::ttheme_default(base_size = 6))
+
+p6 <- tableGrob(hashtag_evenness_examples,
+                theme = gridExtra::ttheme_default(base_size = 6))
+
+all_plots <- list(p1, p2, p3, p4, p5, p6)
+o_fn <- file.path(img_dir, glue('hash_tag_stats_{obj_id}.pdf'))
+plot_panel_layout(plots = all_plots,
+                  filename = o_fn,
+                  heights = c(5, 10, 20),
+                  layout = matrix(c(1, 1, 2, 2, 
+                                    3, 4, 5, 5,
+                                    6, 6, 6, 6), 
+                                  byrow = T, ncol = 4),
+                  h = 25)
+```
