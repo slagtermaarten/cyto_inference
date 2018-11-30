@@ -1,0 +1,462 @@
+---
+title: "Figure 2 - geneset scores - Experiment `r params$experiment`"
+author: "Maarten Slagter"
+# date: "`r format(Sys.time(), '%d %B, %Y')`"
+date: "`r Sys.time()`"
+output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    toc: true
+    extra_dependencies: ["flafter"]
+params:
+  experiment: 6369
+  so: NA
+---
+
+
+```{r }
+source('~/MirjamHoekstra/R/init.R')
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig2')
+dir.create(out_dir, showWarnings = F)
+```
+
+
+```{r, eval=T}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+gst2gs <-
+  list(
+    'default' = tar_read(default_gene_sets)
+  ) %>%
+  # unlist(recursive = F) %>%
+  purrr::flatten() %>%
+  { .[!stringr::str_detect(names(.), 'HK')] } %>%
+  { .[!stringr::str_detect(names(.), 'CXCL10')] } %>%
+  { .[!stringr::str_detect(names(.), '6h.max')] } %>%
+  { .[!stringr::str_detect(names(.), 'TNFa.plateau')] } %>%
+  { . }
+
+map(gst2gs, length)
+
+bulk_so <- tar_read(bulk_5029_so)
+```
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+set.seed(43)
+p_args <- 
+  list(
+    so = bulk_so,
+    genes = unname(unlist(gst2gs)),
+    meta_fields = c('stim_group', 'duration'),
+    filter_samples_mode = 'non_SN',
+    height = unit(6, 'cm'),
+    width = unit(4, 'cm'),
+    show_column_names = F,
+    min_var = 0,
+    column_title = ' ',
+    row_title = ' ',
+    row_gap = unit(.5, 'mm'),
+    geneset_labels = tibble::enframe(gst2gs, 'gs', 'gene') %>%
+      dplyr::mutate(gs = factor(gs, 
+          levels = c('TNFa', 'IFNy', 'synergy'))) %>%
+      tidyr::unnest(gene),
+    show_row_dend = T,
+    N_hl_genes = NULL
+  ) %>%
+  # c(list(
+  #   row_cluster_k = 5,
+  #   col_cluster_k = 4)
+  # ) %>%
+  c(list(column_clust_method = 'none')) %>% 
+  { . }
+
+HM <- do.call(GE_vs_stim_dur, p_args)
+
+print_plot_eval(
+  draw(HM, merge_legend = TRUE, heatmap_legend_side = 'top'),
+  # width = 17.4, 
+  width = 17.4, 
+  height = 15,
+  filename = file.path(out_dir,
+    glue::glue('exp5029_all_MR_genes_simple.pdf')))
+```
+
+Correlation matrix
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 5 #5310 in vitro
+tab <- targets_env$gs_param_table
+so <- get_obj('so')
+so <- so[, so@meta.data$condition_name %in% 
+    c('Unstimulated in vitro - 24h',
+      '10 ng/ml TNFa - 24h',
+      '100 ng/ml IFNy - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')]
+p_dat <- 
+  t(as.matrix(so@assays$SCT[,])) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+meta <- so@meta.data %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+p_dat <- inner_join(p_dat, meta)
+
+geneset_labels <- 
+  tibble::enframe(gst2gs, 'gs', 'gene') %>%
+  dplyr::mutate(gs = factor(gs, 
+      levels = c('TNFa', 'IFNy', 'synergy'))) %>%
+  tidyr::unnest(gene)
+
+```
+
+```{r, warning=FALSE}
+cns <- c(NA, unique(p_dat$condition_name))
+walk(1:length(cns), function(i) {
+  l_p_dat <- p_dat
+  cn <- cns[i]
+
+  if (!is.na(cn)) {
+    l_p_dat <- l_p_dat %>%
+      dplyr::filter(condition_name == cn)
+  }
+
+  l_p_dat <- l_p_dat[, intersect(colnames(l_p_dat), unlist(gst2gs)), drop = F]
+  idxs <- which(apply(l_p_dat, 2, sum) > 0)
+  l_p_dat <- l_p_dat[, idxs]
+  corM <- cor(l_p_dat, method = 'spearman')
+
+  HM <- Heatmap(
+    corM,
+    column_title = cn,
+    name = 'Spearman correlation',
+    col <- circlize::colorRamp2(c(-1, 0, 1), c('navyblue', 'white',
+        'indianred3')),
+    left_annotation = rowAnnotation(
+      'Gene set' = anno_simple(as.character(geneset_labels$gs[
+        match(rownames(corM), geneset_labels$gene)]),
+      col = c('TNFa' = 'blue', 'IFNy' = 'red', 'synergy' = 'purple'),
+      gp = gpar(fontsize = 6))
+    ),
+    top_annotation = columnAnnotation(
+      'Gene set' = anno_simple(as.character(geneset_labels$gs[
+        match(rownames(corM), geneset_labels$gene)]),
+      col = c('TNFa' = 'blue', 'IFNy' = 'red', 'synergy' = 'purple'),
+      gp = gpar(fontsize = 6))
+    ),
+  )
+
+  print_plot_eval(
+    draw(HM, merge_legend = TRUE, heatmap_legend_side = 'top'),
+    # width = 17.4, 
+    width = 17.4, 
+    height = 15,
+    filename = file.path(out_dir,
+      glue::glue('exp5310_in_vitro_corM_{i}.pdf')))
+})
+```
+
+UMAPs
+
+```{r }
+so <- tar_read(filtered_cleaned_so_5310) %>%
+  order_stim_group()
+iso <- tar_read(filtered_cleaned_informative_so_5310) %>%
+  order_stim_group()
+mso <- tar_read(filtered_cleaned_mono_informative_so_5310) %>%
+  order_stim_group()
+length(VariableFeatures(so))
+length(VariableFeatures(iso))
+length(VariableFeatures(mso))
+```
+
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+p1 <- DimPlot(
+  so, group.by = 'stim_group', label.size = 2,
+  # split.by = 'sample_origin',
+  label = FALSE,
+  raster = TRUE) +
+  # scale_colour_stim_group(so@meta.data) +
+  theme_cyto_inf() +
+  guides(colour = guide_legend(ncol = 2))
+print_plot_eval(plot(p1),
+  width = 8.7, height = 10,
+  filename = file.path(out_dir, glue::glue('exp5310_UMAP.pdf')))
+```
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+p1 <- DimPlot(
+  iso, group.by = 'stim_group', label.size = 2,
+  # split.by = 'sample_origin',
+  label = FALSE,
+  raster = TRUE) +
+  # scale_colour_stim_group(so@meta.data) +
+  theme_cyto_inf() +
+  guides(colour = guide_legend(ncol = 2))
+print_plot_eval(plot(p1),
+  width = 8.7, height = 10,
+  filename = file.path(Sys.getenv('img_dir'),
+    glue::glue('exp5310_RF_genes_UMAP.pdf')))
+```
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+GS_p_dat_5310 <- tar_read(GS_p_dat_5310_simple_reference)
+colnames(GS_p_dat_5310) <-
+  stringr::str_replace(colnames(GS_p_dat_5310),
+    '.vanilla.unweighted.sum', '')
+
+p1 <- DimPlot(
+  mso, 
+  group.by = 'stim_group', 
+  # group.by = 'seurat_clusters', 
+  label.size = 2,
+  # split.by = 'sample_origin',
+  label = FALSE,
+  raster = TRUE) +
+  # scale_colour_stim_group(so@meta.data) +
+  theme_cyto_inf() +
+  guides(colour = guide_legend(ncol = 2))
+print_plot_eval(plot(p1),
+  width = 8.7, height = 10,
+  filename = file.path(Sys.getenv('img_dir'),
+    glue::glue('exp5310_mono_UMAP.pdf')))
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+## Two weird cells
+idxs <- which(so@meta.data$sample_origin == 'in_vivo' |
+  Embeddings(so, 'umap')[, 1] < 0)
+so_subs <- so[, -idxs] %>%
+  order_stim_group()
+
+```
+
+```{r, warning=FALSE}
+so_subs <- FindNeighbors(so_subs)
+so_subs <- FindClusters(so_subs, resolution = .1)
+
+# names(so_subs)
+# so_subs$SCT
+# devtools::install_github('theislab/kBET')
+# devtools::install('~/libs/kBET')
+library(kBET)
+
+so_subs@graphs$SCT_nn
+# so_subs@assays$SCT[VariableFeatures(so_subs), ]
+# so_subs@assays$PCA
+
+batch.estimate <- kBET::kBET(
+  Embeddings(so_subs), 
+  do.pca = FALSE,
+  so_subs@meta.data$stim_group,
+  plot = F
+)
+batch.estimate$summary
+batch.estimate$results
+batch.estimate$average.pval
+
+colSums(abs(Embeddings(so_subs)))
+dd <- as.matrix(dist(Embeddings(so_subs)))
+table(so_subs@meta.data$stim_group)
+summary(cluster:::silhouette(as.numeric(so_subs@meta.data$stim_group), dd))
+
+# as.numeric(so_subs@meta.data$stim_group)
+# batch.silhouette <- batch_sil(Embeddings(so_subs), so_subs@meta.data$stim_group)
+# print_plot_eval(
+#   {
+#     print(batch.estimate)
+#   },
+#   width = 17.4, height = 10,
+#   filename = file.path(out_dir,
+#     glue::glue('in_vitro_kbet.pdf')))
+
+# so_iv <- so[, so@meta.data$sample_origin == 'in_vitro']
+# table(so_iv@meta.data$seurat_clusters)
+
+funtimes::purity(
+  so_subs@meta.data$stim_group,
+  so_subs@meta.data$seurat_clusters
+)
+
+plots <-
+  purrr::map(c('stim_group', 'seurat_clusters'), function(vn) {
+    p <-
+      DimPlot(
+        so_subs,
+        pt.size = 2,
+        # group.by = 'stim_group',
+        group.by = vn,
+        label.size = 2,
+        # split.by = 'sample_origin',
+        label = FALSE,
+        raster = FALSE
+      ) +
+      theme_cyto_inf() +
+      guides(colour = guide_legend(ncol = 2)) +
+      ggtitle('') +
+      # gg_legend_alpha_cancel
+      guides(color = guide_legend(
+        override.aes = list(alpha = 1),
+        ncol = 2)
+      )
+    if (vn == 'stim_group') {
+      p <- p + scale_colour_stim_group(so_subs@meta.data)
+    }
+    return(p)
+  })
+fn <- file.path(out_dir, 'exp5310_UMAP.pdf')
+p <- wrap_plots(
+  plots = plots,
+  # guides = 'collect',
+  ncol = 2, nrow = 1
+)
+print_plot_eval(print(p), width = 17.4, height = 10, filename = fn)
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 5 #5310 in vitro
+tab <- targets_env$gs_param_table
+experiment <- get_obj('experiment')
+load_prereqs(param_grid = tab, idx = idx)
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('Unstimulated in vitro - 24h',
+      '10 ng/ml TNFa - 24h',
+      '100 ng/ml IFNy - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+for (fn in c('IFNy', 'TNFa', 'synergy', 
+    'HM Interferon gamma response', 
+    'HM TGF beta Signaling', 
+    'HM TNFa signaling via NFkB')) {
+  for (plot_lgd in c(F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 5 #5310 in vitro
+tab <- targets_env$gs_param_table
+experiment <- get_obj('experiment')
+load_prereqs(param_grid = tab, idx = idx)
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('100 ng/ml IFNy 10 ng/ml TNFa - 24h - SC digest',
+      'Unstimulated in vitro - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+# levels(GS_p_dat$condition_name)
+
+for (fn in c('IFNy', 'TNFa', 'synergy')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+Correlation matrix between gene set set genes across conditions
+
+```{r }
+so <- get_obj('so')
+so <- so[, so@meta.data$condition_name %in% 
+    c('Unstimulated in vitro - 24h',
+      '10 ng/ml TNFa - 24h',
+      '100 ng/ml IFNy - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')]
+
+p_dat <- 
+  t(as.matrix(so@assays$SCT[,])) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+meta <- so@meta.data %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+p_dat <- inner_join(p_dat, meta)
+
+```
+
+```{r, warning=FALSE}
+plots <- map(c(NA, unique(p_dat$condition_name)), function(cn) {
+  l_p_dat <- p_dat
+  if (!is.na(cn)) {
+    l_p_dat <- l_p_dat %>%
+      dplyr::filter(condition_name == cn)
+  }
+  # gene_sets
+  # install.packages("ggcorrplot")
+  pacman::p_load('ggcorrplot')
+  l_p_dat <- l_p_dat[, intersect(colnames(l_p_dat), unlist(gst2gs)), drop = F]
+  if (ncol(l_p_dat) == 1) return(NULL)
+  print(cn)
+  idxs <- which(apply(l_p_dat, 2, sum) > 0)
+  if (length(idxs) == 0) browser()
+  l_p_dat <- l_p_dat[, idxs]
+  corM <- cor(l_p_dat, method = 'spearman')
+  p <- ggcorrplot::ggcorrplot(corM, 
+    lab_size = 1,
+    hc.order = TRUE, outline.col = 'white') + 
+    ggtitle(cn)
+  return(p)
+})
+
+plot_panel_layout(
+  plots = plots,
+  labels = NULL,
+  ncol = 1, nrow = 2, 
+  filename = file.path(out_dir, '5310_in_vitro_MR_gene_cors.pdf')
+)
+```

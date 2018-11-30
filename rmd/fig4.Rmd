@@ -1,0 +1,537 @@
+---
+title: "Fig 4"
+author: "Maarten Slagter"
+date: "`r Sys.time()`"
+output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    toc: false
+---
+
+```{r, warning=FALSE}
+options('plot_force_file' = TRUE)
+ 
+source('~/MirjamHoekstra/R/init.R')
+
+tab <- targets_env$gs_param_table
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+
+Mean expression heatmaps
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+for (idx in c(8, 10, 12)) {
+  load_prereqs(param_grid = tab, idx = idx)
+  report_cp <- get_obj('report_cp')
+  o_fn <- file.path(out_dir,
+      glue::glue('expression_heatmaps-{report_cp}.pdf'))
+  mean_expression_heatmaps(get_obj('GS_p_dat'), o_fn = o_fn)
+}
+```
+
+Supplemental: quantify separability based on time informative gene
+sets
+
+```{r}
+# param_grid <- tidyr::expand_grid(
+#   idx = c(8, 10, 12),
+#   ex_vars = list(
+#     c('IFNy.late', 'IFNy.plateau'), 
+#     c('TNFa.early', 'TNFa.late')
+#   )
+# )
+source('~/MirjamHoekstra/R/init.R')
+
+source(file.path(r_dir, 'get_knit_params.R'))
+
+tab <- targets_env$gs_param_table
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+
+library(tidymodels)
+library(modeldata)
+library(stringr)
+
+response_var = 'condition_name'
+
+selection_crit <- list(
+  '5310' = tibble('sample_type' = 'in_vivo'),
+  '6369' = tibble('stim_group' = '100 ng/ml IFNy'),
+  '6489' = tibble('stim_group' = 'SN'),
+  '6493' = tibble('stim_group' = 'Exposed to T-cells in vivo')
+)
+
+# pwalk(param_grid, function(idx, ex_vars) {
+
+tab[c(8, 10, 12), ]
+
+plots <- 
+  tidyr::expand_grid(
+    idx = c(8, 10, 12),
+    tibble(
+      ex_idx = 1:4,
+      ex_vars = list(
+        c('IFNy.late'), 
+        c('IFNy.late', 'IFNy.plateau'), 
+        c('TNFa.early'),
+        c('TNFa.early', 'TNFa.late')
+      )
+    )
+  ) %>%
+  dplyr::filter(!(idx %in% c(8, 12) & ex_idx %in% c(3, 4))) %>%
+  dplyr::select(-ex_idx) %>%
+  purrr::pmap(function(idx, ex_vars) {
+    experiment <- tab$experiment[idx]
+    id_part <- glue::glue('{make_flag(experiment)}\\
+      -response_var={response_var}\\
+      -ex_vars={paste(ex_vars, collapse = \'_\')}')
+    search_fn <- file.path(rds_dir, 
+      glue::glue('mod_optim{id_part}.rds'))
+
+    load_prereqs(param_grid = tab, idx = idx)
+    source(file.path(r_dir, 'GS_time_inference.R'))
+    eval(time_inference_preproc)
+
+    dtf <- GS_p_dat %>%
+      dplyr::right_join(selection_crit[[experiment]]) %>%
+      dplyr::mutate(condition_name = droplevels(condition_name)) %>%
+      dplyr::select(condition_name, any_of(ex_vars))
+
+    set.seed(2369)
+    tr_te_split <- initial_split(dtf, prop = 3/4)
+
+    set.seed(1697)
+    folds <- vfold_cv(training(tr_te_split), v = 10)
+
+    form <- 
+      glue::glue('{response_var} ~ {paste(ex_vars, collapse = \' + \')}') %>%
+      as.formula()
+
+    my_rec <- recipe(form, data = training(tr_te_split))
+
+    svm_mod <-
+      svm_rbf(
+        mode = 'classification', 
+        cost = tune(), 
+        rbf_sigma = tune()
+      ) %>%
+      set_engine('kernlab')
+
+    svm_wflow <- workflow() %>%
+      add_model(svm_mod) %>%
+      add_recipe(my_rec)
+
+    if (file.exists(search_fn)) {
+      message(glue::glue('Skipping {id_part}'))
+      # return(NULL)
+      search_res <- readRDS(search_fn)
+    } else {
+      message(glue::glue('Doing {id_part}'))
+      set.seed(12)
+      if (F) {
+        search_res <-
+          svm_wflow %>% 
+          tune_grid(
+            resamples = folds,
+            # How to measure performance?
+            metrics = metric_set(roc_auc)
+          )
+      } else {
+        search_res <-
+          svm_wflow %>% 
+          tune_bayes(
+            resamples = folds,
+            # Generate five at semi-random to start
+            initial = 3,
+            iter = 20,
+            # How to measure performance?
+            metrics = metric_set(roc_auc),
+            control = control_bayes(
+              no_improve = 3L, 
+              verbose = TRUE)
+          )
+        saveRDS(search_res, search_fn)
+      }
+    }
+
+    estimates <- 
+      collect_metrics(search_res) %>% 
+      arrange(.iter)
+
+    best_parms <- show_best(search_res, metric = 'roc_auc')[1,]
+
+    search_res %>%
+      dplyr::select(.metrics) %>%
+      dplyr::slice(1) %>% 
+      dplyr::pull(1)
+
+    final_wflow <- finalize_workflow(svm_wflow, best_parms) %>%
+      fit(testing(tr_te_split))
+
+    # M <- predict(final_wflow, testing(tr_te_split), type = 'prob') %>%
+    #   { set_colnames(., str_replace(colnames(.), '.pred_', '')) } %>%
+    #   { . }
+
+    rf_testing_pred <- 
+      predict(final_wflow, testing(tr_te_split)) %>% 
+      bind_cols(predict(final_wflow, testing(tr_te_split), type = 'prob')) %>% 
+      bind_cols(dplyr::select(testing(tr_te_split), condition_name)) %>%
+      { . }
+
+    levs <- levels(rf_testing_pred$condition_name)
+    pred_cols <- map_chr(levs, ~glue::glue('.pred_{.x}'))
+    if (length(levs) == 2) {
+      pred_cols <- pred_cols[1]
+    }
+    AUROC <- rf_testing_pred %>%
+      roc_auc(all_of(pred_cols), truth = condition_name) %>%
+      dplyr::pull(.estimate)
+
+    stats_table <- 
+      tibble(
+        actual = testing(tr_te_split)$condition_name,
+        predicted = predict(final_wflow, testing(tr_te_split))$.pred_class
+      )
+    CM <- 
+      stats_table %>%
+      yardstick::conf_mat(actual, predicted)
+
+    for (i in 1:ncol(CM$table)) {
+      CM$table[, i] <- round(CM$table[, i] / sum(CM$table[, i]), 2)
+    }
+
+    p <- 
+      CM %>%
+      autoplot(type = 'heatmap') +
+      rotate_x_labels(45) +
+      scale_x_discrete(expand = c(0, 0)) +
+      scale_y_discrete(expand = c(0, 0)) +
+      ggtitle(glue::glue('Experiment: {experiment}\\
+          \nEx. vars: {paste(ex_vars, collapse = \', \')}\\
+          \nAUROC: {round(AUROC, 2)}'))
+
+    return(p)
+    out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+    print_plot_eval(print(p),
+      width = 10, height = 10,
+      filename = file.path(out_dir,
+        glue::glue('confusion_table_{id_part}.pdf')))
+    # autoplot(search_res, type = "parameters") + 
+    #   labs(x = "Iterations", y = NULL)
+
+  })
+
+tf <- function(x) wrap_plots(x, nrow = 4, ncol = 2)
+print_plot_eval({
+    print(tf(plots[1:8]))
+    # print(tf(plots[1:10]))
+    # print(tf(plots[1:4]))
+    # print(tf(plots[5:8]))
+    # print(tf(plots[9:10]))
+  },
+  width = 17.4, height = 27,
+  filename = file.path(out_dir,
+    glue::glue('time_informative_separability.pdf'))
+)
+```
+
+
+# Supplements
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 16 #6601 all
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = idx)
+experiment <- get_obj('experiment')
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+```
+
+```{r, warning=FALSE}
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('Unexposed in vivo - 24h',
+      'Unexposed in vivo - 48h',
+      '100 ng/ml IFNy - 24h',
+      '100 ng/ml IFNy - 48h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+for (fn in c('IFNy', 'TNFa', 'synergy')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      fn_add = '6601_IT_48vs24h_IFNy',
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = experiment,
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+x_var <- 'IFNy'
+y_var <- 'TNFa' 
+duration = 6
+for (duration in unique(GS_p_dat$duration)) {
+  print(duration)
+  qs <- GS_p_dat %>%
+    dplyr::filter(duration == .env[['duration']]) %>%
+    {
+      map_dfc(auto_name(c(x_var, y_var)),
+        function(.x) retrieve_anchor_thresh(.,
+          perc = .95,
+          ref_condition = tibble('stim_group' = 'Unexposed in vivo'),
+          anchor_gs = .x)$q9)
+    }
+
+  perc_labels <- 
+    GS_p_dat %>%
+    dplyr::filter(duration == .env[['duration']]) %>%
+    dplyr::nest_by(cn_simple) %>%
+    dplyr::summarize(
+      compute_perc_labels(data, qs)
+      ) %>%
+    { . }
+
+  # print(perc_labels)
+
+  perc_labels %>%
+    group_by(cn_simple) %>%
+    dplyr::summarize(
+      'top' = sum(value[name %in% c('Q2', 'Q4')]),
+      'right' = sum(value[name %in% c('Q3', 'Q4')])
+    ) %>%
+    print()
+}
+```
+
+# Cell death proxies vs. gene set scores
+
+```{r }
+so <- get_obj('unfiltered_so') %>%
+  ComputeGeneSetScores(
+    weighting_funcs = all_weighting_funcs[c('unweighted')]
+  )
+cns = c('condition_name', 'duration', 'percent.ribo', 'percent.mt',
+  'nCount_RNA')
+p_dat <- create_GS_p_dat(so = so, meta_vars = cns)
+```
+
+```{r, warning=FALSE}
+  of = file.path(out_dir, 'exp6601_gs_vs_cell_death.pdf')
+  plots <-
+    tidyr::expand_grid(
+      x_var = c('TNFa', 'IFNy'),
+      y_var = setdiff(cns, c('condition_name', 'duration'))
+    ) %>%
+    pmap(function(x_var, y_var) {
+      p <- 
+        p_dat %>%
+        ggplot(aes_string(x = x_var, y = y_var, colour = 'synergy')) +
+        ggrastr::rasterise(geom_point(), dpi = 300) + 
+        facet_wrap('condition_name') +
+        theme()
+      return(p)
+    })
+
+    NC = 1; NR = 2
+  # p1 <- wrap_plots(plots, guides = 'collect', ncol = NC, nrow = NR)
+  # print_plot_eval(
+  #   { print(p1) },
+  #   width = 17.4, height = 25,
+  #   filename = of)
+  plot_panel_layout(
+    plots = plots,
+    labels = NULL,
+    ncol = NC, nrow = NR, 
+    filename = of
+  )
+
+```
+
+```{r, eval=F}
+p <- ggplot(GS_p_dat, 
+  aes(x = TNFa, y = IFNy, colour = synergy)) + 
+  geom_point() + 
+  facet_wrap(~condition_name)
+print_plot_eval(print(p),
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('TNFa_pockets.pdf')))
+```
+
+# Unclustered heatmap of Mirjam selected genes
+
+```{r mirjam-gen-sel-HM}
+if (interactive())
+  source('~/MirjamHoekstra/R/init.R')
+
+
+fns <- exp_dynamics_panel(
+  features = names(which(row_split == 3)),
+  meta_data = tar_read(sample_annotation_mouse),
+  merge_cn = 'sample_name',
+  version = 'mirjam_mrs_that_arent_mono',
+  lookup_data = tar_read(M_cpm_mouse),
+  redo = F,
+  leave_out_sn = F
+)
+```
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+sa <- 
+  sample_annotation[, c('duration', 'stim_group'), drop = F] %>%
+  order_stim_group() %>%
+  dplyr::rename(m_sg = stim_group)
+
+lM <- subset_feats(tar_read(M_cpm_mouse), true_MRs)
+lMs <- scale(t(lM))
+
+tgf_idxs <- which(stringr::str_detect(sa$m_sg, 'TGF'))
+true_MRs <- true_MRs %>%
+  setdiff(names(which(apply(lMs[tgf_idxs, ], 2, mean) > 0)))
+
+idxs <- which(!stringr::str_detect(sa$m_sg, 'IL-2|A1 B2|IFNA'))
+sa <- sa[idxs, ]
+lM <- lM[, idxs]
+sa$m_sg <- droplevels(sa$m_sg)
+
+DE <- GE_vs_stim_dur(
+  M = lM[true_MRs, ],
+  min_var = 0,
+  sa = sa,
+  # ra = dplyr::select(geneset_labels, geneset) %>%
+  #   as.data.frame() %>%
+  #   set_rownames(geneset_labels$gene),
+  plot_name = 'mouse_mirjam_mrs',
+  # cluster_columns = cluster_within_group(lM, sample_group),
+  # cluster_rows = cluster_within_group(t(lM), gene_group),
+  # cluster_rows = gene_clust,
+  cluster_columns = F,
+  # cluster_columns = T,
+  show_row_dend = FALSE,
+  N_hl_genes = 5,
+  row_cluster_k = NULL,
+  # column_cluster_k = 5,
+  # genes = geneset_labels$gene,
+  geneset_labels = 
+    map(mono_gs, ~intersect(.x, true_MRs)) %>%
+      tibble::enframe('gs', 'gene') %>%
+      tidyr::unnest(gene),
+  height = unit(15, 'cm'),
+  show_column_names = FALSE
+)
+
+print_plot_eval(
+  draw(DE, merge_legend = T, heatmap_legend_side = 'right'),
+  width = 17.4, height = 25,
+  filename = file.path(out_dir,
+    glue::glue('mouse_bulk_selected_genes_heatmap.pdf'))
+)
+```
+
+```{r }
+so <- tar_read(filtered_cleaned_so_6743_manual)
+
+so_s <- ComputeGeneSetScores(
+  so = so,
+  assay = 'SCT',
+  datatype = 'counts',
+  weighting_funcs = all_weighting_funcs['unweighted'],
+  genesets = map(mono_gs, ~intersect(.x, true_MRs)),
+  simplify_names = T
+)
+
+if (F) {
+  so_s[['sga']] <- paste(unlist(so_s[['stim_group']]), '-', 
+    unlist(so_s[['dbscan_cluster']]))
+}
+
+so_s <- order_stim_group(so_s)
+so_s[['sga']] <- so_s[['stim_group']]
+# so_s@meta.data$stim_group
+# so_s@meta.data$sga
+fns <- rownames(so_s[['GS']])
+fns <- c('IFNy-mono', 'TNFa-mono')
+
+GS_p_dat <- assay2dtf(so_s, 'GS', 
+  s_vars = c('condition_name', 'sample_origin', 'ifn_conc',
+    'sn_dilution', 'percent.mt', 'tnf_conc', 'duration',
+    'dbscan_cluster', 'sga'))
+```
+
+```{r mouse-sc-violins, eval=F, warning=FALSE, fig.width = 12/2.56, fig.height = 10/2.56}
+if (interactive())
+  source('~/MirjamHoekstra/R/init.R')
+purrr::walk(fns, function(fn) {
+  # p <- plot_vln(so_s, fn = fn, 
+  #   assay = 'GS', group_var = 'sga', pt.size = .02) +
+  p <- plot_vln(GS_p_dat, fn = fn, 
+    group_var = 'sga', pt.size = .02) +
+    scale_x_discrete(expand = c(0, 0))
+    # ggpubr::stat_compare_means(
+    #   label = "p.signif",
+    #   method = "wilcox.test",
+    #   ref.group = 'Mix PBS',
+    #   label.x.npc = .5,
+    #   label.y.npc = 1,
+    #   colour = 'indianred3'
+    # )
+    # ggtitle(with(long_gene_cluster_names, gcn[which(gc == fn)]))
+  pe <- rlang::expr({ print(p) })
+  print_plot_eval(!!pe, width = 12, height = 10,
+    filename = file.path(out_dir,
+      glue::glue('violin_{fn}.pdf')))
+})
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+GS_p_dat <- 
+  assay2dtf(so_s, 'GS') %>%
+  format_gs_names() %>%
+  dplyr::mutate(stim_group = factor(stim_group, 
+      levels = c('Mix PBS', 'Ag-GAS + T', 'Mix + T')))
+
+for (fn in colnames(GS_p_dat)[1:2]) {
+  mk_ann_GS_vln(
+    p_dat = GS_p_dat,
+    cn_mode = 'all',
+    fn = fn,
+    out_dir = out_dir,
+    experiment = '6743',
+    return_mode = 'file',
+    p_values = 'reference',
+    plot_lgd = F
+  )
+}
+```
+
+```{r }
+compute_all_pairwise_medians(GS_p_dat) %>%
+  write_tsv(file.path(out_dir, 'pairwise_gs_comp_stats_6743_mouse_in_vivo.tsv'))
+```

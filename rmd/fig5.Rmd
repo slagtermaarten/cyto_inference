@@ -1,0 +1,300 @@
+```{r compute-gs, cache=T}
+source('~/MirjamHoekstra/R/init.R')
+
+all_mouse_genesets <- 
+  mouse_genesets %>%
+  { .[!stringr::str_detect(names(.), 'doubt')] }
+
+tar_read(stringent_MR_clusters_mouse)
+
+if (!exists('so') || so@meta.data$exp[1] != '6743') {
+  so <- tar_read(filtered_so_6743)
+  sg_levs <- c('Mix PBS', 'Ag-GAS + T', 'Mix + T')
+  stopifnot(all(so@meta.data$stim_group %in% sg_levs))
+  so@meta.data$stim_group <- factor(so@meta.data$stim_group,
+    levels = sg_levs)
+}
+
+if (!exists('so_s') || so_s@meta.data$exp[1] != '6743') {
+  if (interactive())
+    source('~/MirjamHoekstra/R/init.R')
+  so_s <- 
+    ComputeGeneSetScores(
+      so, 
+      weighting_funcs = all_weighting_funcs['unweighted'],
+      genesets = all_mouse_genesets
+    )
+  so_s <- 
+    min_max_scale_assay(so_s, assay = 'GS') %>%
+    order_condition_name() %>%
+    order_duration()
+  so_s@meta.data$stim_group <- 
+    factor(so_s@meta.data$stim_group, levels = sg_levs)
+  # so_s[['GS']][, ]
+}
+
+# rownames(so_s[['GS_MM']])
+# so_s[['GS_MM']][,]
+# p_dat <- assay2dtf(so_s, 'GS_MM')
+# ra$sg
+
+if (F) {
+  ass <- so_s@assays$GS[,]
+  rownames(ass) <- stringr::str_replace_all(rownames(ass),
+    ' ', '-')
+  rownames(ass) <- stringr::str_replace(rownames(ass),
+    '.vanilla.unweighted.sum', '')
+  ass <- t(robust_scale(t(ass)))
+  ass <- CreateAssayObject(ass)
+  so_s[['gsm']] <- ass
+  so_s[['GS']] <- NULL
+}
+so_s[['GS_MM']] <- NULL
+```
+
+```{r }
+if (interactive())
+  source('~/MirjamHoekstra/R/init.R')
+
+so_s[['sga']] <- so_s[['stim_group']]
+
+
+purrr::walk(synergy_genes, function(fn) {
+  p <- plot_vln(so_s, fn = fn, assay = 'SCT',
+    group_var = 'sga',
+    pt.size = .02) +
+    scale_x_discrete(expand = c(0, 0)) +
+    ggpubr::stat_compare_means(
+      label = "p.signif",
+      method = "wilcox.test",
+      ref.group = 'Mix PBS',
+      label.x.npc = .5,
+      label.y.npc = 1,
+      colour = 'indianred3'
+    )
+  pe <- rlang::expr({ print(p) })
+  print_plot_eval(!!pe, width = 12, height = 10,
+    filename = file.path(Sys.getenv('img_dir'),
+      glue::glue('violin_{fn}.pdf')))
+})
+```
+
+```{r, prep-scatters}
+# p_dat <- assay2dtf(so_s, 'GS_MM')
+GS_p_dat <- assay2dtf(so_s, 'GS') %>%
+  format_gs_names() %>%
+  dplyr::mutate(stim_group = factor(stim_group, 
+      levels = c('Mix PBS', 'Ag-GAS + T', 'Mix + T')))
+
+if (F) {
+  message('Logging synergy scores')
+  GS_p_dat$synergy <- log10(GS_p_dat$synergy + 1)
+}
+GS_p_dat$stim_group <- 
+  factor(GS_p_dat$stim_group, 
+    levels =  levels(so_s@meta.data[['stim_group']]))
+# GS_p_dat <- GS_p_dat %>%
+#   dplyr::arrange(synergy) %>%
+#   { .[sample(1:nrow(.)), ] }
+# summary(GS_p_dat$synergy)
+# which(is.na(GS_p_dat$synergy))
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+axis_names <- c('synergy' = 'Synergy score')
+get_axis_name <- function(v) {
+  v <- stringr::str_replace(v, '-mr-l', '')
+  v <- stringr::str_replace(v, '_mr_l', '')
+  if (v %in% names(axis_names)) {
+    return(axis_names[v])
+  } else {
+    return(v)
+  }
+}
+
+
+p_dat_g <-
+  GS_p_dat %>%
+  normalize_gs(
+    var_cols = colnames(GS_p_dat)[1:10],
+    ref_condition = tibble('stim_group' = 'Mix PBS')
+  ) %>%
+  dplyr::group_by(stim_group) %>%
+  tidyr::nest() %>%
+  dplyr::arrange(stim_group) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(i = 1:n()) %>%
+  { . }
+# p_dat_g$data[[1]]
+
+# compare_gs_between_levs(p_dat_gs)
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+compute_all_pairwise_medians(GS_p_dat, 
+  comp_vars = c('TNFa_mono', 'IFNy_mono')
+)
+
+plot_cell_scatter <- function(
+  x_var = 'IFNy_mr_l', y_var = 'TNFa_mr_l', colour_var = 'synergy') {
+  plots <- 
+    p_dat_g %>%
+    purrr::pmap(function(stim_group, data, i) {
+      x_off = .02
+      y_off = .05
+      qs <- tidyr::unnest(p_dat_g, data) %>%
+        {
+          map_dfc(auto_name(c(x_var, y_var)),
+            function(.x) retrieve_anchor_thresh(.,
+              perc = .95,
+              ref_condition = tibble('stim_group' = 'Mix PBS'),
+              anchor_gs = .x)$q9
+          )
+        }
+
+      perc_labels <- compute_perc_labels(dtf = data, qs = qs, 
+        x_off = x_off, y_off = y_off,
+        x_var = x_var, y_var = y_var) %>%
+        { . }
+
+      thresholds <-
+        tidyr::unnest(p_dat_g, data) %>%
+        # dplyr::distinct(stim_group) %>%
+        dplyr::mutate(
+          xintercept = qs[[x_var]],
+          yintercept = qs[[y_var]]
+        )
+
+      scr <- gen_coord_ranges_fun(
+        dtf = tidyr::unnest(p_dat_g, data), 
+        column_selector = any_of(c(x_var, y_var))
+        # column_selector = matches('IFNy_early')
+      )
+
+      print(cor(data[[x_var]], data[[y_var]], method = 'spearman'))
+      p <- data %>%
+        # dplyr::filter(percent.mt <= 25) %>%
+        ggplot(
+          aes_string(
+            x = x_var,
+            y = y_var,
+            colour = colour_var)
+          ) +
+        ggrastr::rasterise(
+          geom_point(alpha = .1, colour = 'midnightblue'), dpi = 300) +
+        geom_smooth(method = 'lm') +
+        # scale_colour_viridis_c(
+        #   name = 'Synergy score',
+        #   # values = rlang::set_names(range(GS_p_dat$synergy), c(0, 1))
+        #   values = range(GS_p_dat$synergy)
+        # ) +
+        theme_cyto_inf(legend.position = 'bottom') +
+        xlab(get_axis_name(x_var)) +
+        ylab(get_axis_name(y_var)) +
+        ggtitle(stim_group)
+      if (!is.null(colour_var)) {
+        p <- p + scale_colour_viridis_c(
+          name = get_axis_name(colour_var),
+          limits = range(tidyr::unnest(p_dat_g, data)[[colour_var]])
+          # limits = c(0, 100)
+          # values = rlang::set_names(range(GS_p_dat$synergy), c(0, 1))
+        ) 
+      }
+      p <- scr(p)
+
+      if (T) {
+        p <- p +
+          geom_hline(data = thresholds, 
+            mapping = aes(yintercept = yintercept)) +
+          geom_vline(data = thresholds, 
+            mapping = aes(xintercept = xintercept)) +
+          ggpp::geom_text_npc(data = perc_labels,
+            mapping = aes(npcx = npc_x, npcy = npc_y, 
+              label = round(value, 2)))
+      }
+      if (F) {
+        print_plot_eval({
+          p <<- ggExtra::ggMarginal(p, type = 'density',
+            groupColour = F, groupFill = F)
+        },
+        width = 17.4, height = 10,
+        filename = file.path(Sys.getenv('img_dir'),
+          glue::glue('simple_wrap.pdf')))
+      }
+
+      return(p)
+
+    })
+
+  o_fn <- file.path(out_dir,
+    glue::glue('GS_scatter{make_flag(x_var)}_{make_flag(y_var)}\\
+      _{make_flag(colour_var)}.pdf'))
+  maartenutils::plot_panel_layout(
+    plots,
+    nrow = 3,
+    ncol = 1,
+    plot_direct = test_rendering(),
+    w = 10, h = 15,
+    labels = NULL,
+    filename = o_fn
+  )
+  rm('plots')
+}
+
+# plot_cell_scatter(
+#   x_var = 'IFNy_early', y_var = 'IFNy_late', 
+#   colour_var = 'synergy_less_strict'
+# )
+plot_cell_scatter(
+  x_var = 'IFNy_mono', y_var = 'TNFa_mono', 
+  colour_var = NULL
+)
+# plot_cell_scatter(
+#   x_var = 'IFNy_mr_l', colour_var = 'TNFa_mr_l', y_var =
+#     'synergy_less_strict')
+```
+
+```{r }
+devtools::load_all(file.path('~/libs', 'maartenutils'))
+library(genesets)
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig5')
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+hallmark_gs <- filter_gmt(
+  pattern='.*',
+  gmt_pattern='mh.all.v0.3',
+  type='symbols')
+caplist <- caplist_def %>%
+  c('via')
+names(hallmark_gs) <- names(hallmark_gs) %>%
+  stringr::str_replace('HALLMARK_', '') %>%
+  tolower() %>%
+  # stringr::str_replace('_', ' ') %>%
+  simple_cap(cap_first_word_only = T, caplist = caplist)
+names(hallmark_gs)
+```
+
+```{r, warning=FALSE}
+source(file.path(Sys.getenv('r_dir'), 'gsea.R'))
+
+plots <- 
+  tibble(
+    idx = c(3, 5, 6),
+    HALLMARK_name = c('TGF beta signaling', 
+      'TNFa signaling via NFkB',
+      'Interferon gamma response'),
+    q = c(.9999, .999, .999)) %>%
+    purrr::pmap(tM_vs_HALLMARK, 
+      tM = tar_read(tM_mouse), 
+      hallmark_gs = hallmark_gs)
+
+
+plot_panel_layout(
+  plots = plots,
+  labels = NULL,
+  ncol = 1, nrow = 2, 
+  filename = file.path(out_dir, 'SI_our_murine_data_vs_hallmark.pdf')
+)
+```

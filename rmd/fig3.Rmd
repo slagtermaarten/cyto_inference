@@ -1,0 +1,107 @@
+```{r }
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig3')
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 3 #5310 in vivo
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = idx)
+experiment <- get_obj('experiment')
+
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names() %>%
+  dplyr::filter(sample_origin == 'in_vivo') %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+compute_all_pairwise_medians(GS_p_dat) %>%
+  write_tsv(file.path(out_dir, 
+      'pairwise_gs_comp_stats_5310_in_vivo.tsv'))
+```
+
+```{r init}
+source(file.path(Sys.getenv('r_dir'), 'get_knit_params.R'))
+load_prereqs()
+
+GS_p_dat_6601 <- tar_read(GS_p_dat_6601_simple_reference)
+colnames(GS_p_dat_6601) <-
+  stringr::str_replace(colnames(GS_p_dat_6601),
+    '.vanilla.unweighted.sum', '')
+```
+
+
+
+
+```{r }
+xoff = .02
+yoff = .05
+
+table(GS_p_dat_6601$condition_name)
+plots <- GS_p_dat_6601 %>%
+  dplyr::filter(percent.mt <= 25) %>%
+  nest_by(duration) %>%
+  dplyr::summarize(plot = {
+    qs <- map_dfc(auto_name(c('IFNy', 'TNFa')),
+      function(.x) retrieve_anchor_thresh(data,
+        perc = .95,
+        ref_condition = tibble('stim_group' = 'Unexposed in vivo'),
+        anchor_gs = .x)$q9)
+
+    perc_labels <- data %>%
+      dplyr::nest_by(cn_simple) %>%
+      dplyr::summarize(compute_perc_labels(data, qs))
+
+    perc_labels %>%
+      dplyr::group_by(cn_simple) %>%
+      dplyr::summarize(sum(value[name %in% c('Q2', 'Q4')]))
+
+    thresholds <-
+      data %>%
+      dplyr::distinct(cn_simple) %>%
+      dplyr::mutate(
+        xintercept = qs$IFNy,
+        yintercept = qs$TNFa
+      )
+
+    p <- data %>%
+      ggplot(
+        aes_string(
+          x = glue('IFNy'),
+          y = glue('TNFa'),
+          colour = glue('synergy'))
+        ) +
+      geom_point() +
+      ggpp::geom_text_npc(data = perc_labels,
+        mapping = aes(npcx = npc_x, npcy = npc_y, label = value)) +
+      scale_colour_viridis_c(name = 'Synergy score') +
+      theme_cyto_inf(legend.position = 'bottom') +
+      geom_hline(data = thresholds, mapping = aes(yintercept =
+          yintercept)) +
+      geom_vline(data = thresholds, mapping = aes(xintercept =
+          xintercept)) +
+      xlab('IFNy score') +
+      facet_wrap(~cn_simple, nrow = 3) +
+      ylab('TNFa score') +
+      ggtitle('')
+    list(p)
+  })
+
+
+fn <- file.path(out_dir, glue::glue('6601_synergy_scatter.pdf'))
+plot_panel_layout(
+  plots = plots$plot,
+  ncol = 1, nrow = 1,
+  clear_redundant_legends = F,
+  width = 12,
+  height = 10,
+  filename = fn, labels = NULL
+)
+```
+
