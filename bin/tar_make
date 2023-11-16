@@ -1,0 +1,26 @@
+#!/bin/zsh
+
+cd ~/MirjamHoekstra
+CONFIGFILE=~/MirjamHoekstra/_targets.R
+
+nworkers=1
+nworkers=16
+nworkers=2
+nworkers=8
+nworkers=12
+nworkers=36
+nworkers=24
+nworkers=4
+nworkers=12
+
+ARGS=$0
+
+if [ 1 = 1 ]; then
+  COM="targets::tar_make_future(workers = $nworkers, reporter = 'summary'$ARGS)"
+else
+  COM="targets::tar_make(reporter = 'summary'$ARGS)"
+fi
+
+echo "running $COM"
+
+nice -n 19 xvfb-run -a Rscript -e $COM

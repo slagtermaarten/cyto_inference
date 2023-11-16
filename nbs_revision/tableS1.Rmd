@@ -1,0 +1,206 @@
+# Table S1
+
+Quantify separability based on time informative gene sets
+
+```{r}
+# param_grid <- tidyr::expand_grid(
+#   idx = c(8, 10, 12),
+#   ex_vars = list(
+#     c('IFNy.late', 'IFNy.plateau'), 
+#     c('TNFa.early', 'TNFa.late')
+#   )
+# )
+source('~/MirjamHoekstra/R/init.R')
+
+source(file.path(r_dir, 'get_knit_params.R'))
+
+tab <- targets_env$gs_param_table
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+
+library(tidymodels)
+library(modeldata)
+library(stringr)
+
+response_var = 'condition_name'
+
+selection_crit <- list(
+  '5310' = tibble('sample_type' = 'in_vivo'),
+  '6369' = tibble('stim_group' = '100 ng/ml IFNy'),
+  '6489' = tibble('stim_group' = 'SN'),
+  '6493' = tibble('stim_group' = 'Exposed to T-cells in vivo')
+)
+
+# pwalk(param_grid, function(idx, ex_vars) {
+
+tab[c(8, 10, 12), ]
+
+plots <- 
+  tidyr::expand_grid(
+    idx = c(8, 10, 12),
+    tibble(
+      ex_idx = 1:4,
+      ex_vars = list(
+        c('IFNy.late'), 
+        c('IFNy.late', 'IFNy.plateau'), 
+        c('TNFa.early'),
+        c('TNFa.early', 'TNFa.late')
+      )
+    )
+  ) %>%
+  dplyr::filter(!(idx %in% c(8, 12) & ex_idx %in% c(3, 4))) %>%
+  dplyr::select(-ex_idx) %>%
+  purrr::pmap(function(idx, ex_vars) {
+    experiment <- tab$experiment[idx]
+    id_part <- glue::glue('{make_flag(experiment)}\\
+      -response_var={response_var}\\
+      -ex_vars={paste(ex_vars, collapse = \'_\')}')
+    search_fn <- file.path(rds_dir, 
+      glue::glue('mod_optim{id_part}.rds'))
+
+    load_prereqs(param_grid = tab, idx = idx)
+    source(file.path(r_dir, 'GS_time_inference.R'))
+    eval(time_inference_preproc)
+
+    dtf <- GS_p_dat %>%
+      dplyr::right_join(selection_crit[[experiment]]) %>%
+      dplyr::mutate(condition_name = droplevels(condition_name)) %>%
+      dplyr::select(condition_name, any_of(ex_vars))
+
+    set.seed(2369)
+    tr_te_split <- initial_split(dtf, prop = 3/4)
+
+    set.seed(1697)
+    folds <- vfold_cv(training(tr_te_split), v = 10)
+
+    form <- 
+      glue::glue('{response_var} ~ {paste(ex_vars, collapse = \' + \')}') %>%
+      as.formula()
+
+    my_rec <- recipe(form, data = training(tr_te_split))
+
+    svm_mod <-
+      svm_rbf(
+        mode = 'classification', 
+        cost = tune(), 
+        rbf_sigma = tune()
+      ) %>%
+      set_engine('kernlab')
+
+    svm_wflow <- workflow() %>%
+      add_model(svm_mod) %>%
+      add_recipe(my_rec)
+
+    if (file.exists(search_fn)) {
+      message(glue::glue('Skipping {id_part}'))
+      # return(NULL)
+      search_res <- readRDS(search_fn)
+    } else {
+      message(glue::glue('Doing {id_part}'))
+      set.seed(12)
+      if (F) {
+        search_res <-
+          svm_wflow %>% 
+          tune_grid(
+            resamples = folds,
+            # How to measure performance?
+            metrics = metric_set(roc_auc)
+          )
+      } else {
+        search_res <-
+          svm_wflow %>% 
+          tune_bayes(
+            resamples = folds,
+            # Generate five at semi-random to start
+            initial = 3,
+            iter = 20,
+            # How to measure performance?
+            metrics = metric_set(roc_auc),
+            control = control_bayes(
+              no_improve = 3L, 
+              verbose = TRUE)
+          )
+        saveRDS(search_res, search_fn)
+      }
+    }
+
+    estimates <- 
+      collect_metrics(search_res) %>% 
+      arrange(.iter)
+
+    best_parms <- show_best(search_res, metric = 'roc_auc')[1,]
+
+    search_res %>%
+      dplyr::select(.metrics) %>%
+      dplyr::slice(1) %>% 
+      dplyr::pull(1)
+
+    final_wflow <- finalize_workflow(svm_wflow, best_parms) %>%
+      fit(testing(tr_te_split))
+
+    # M <- predict(final_wflow, testing(tr_te_split), type = 'prob') %>%
+    #   { set_colnames(., str_replace(colnames(.), '.pred_', '')) } %>%
+    #   { . }
+
+    rf_testing_pred <- 
+      predict(final_wflow, testing(tr_te_split)) %>% 
+      bind_cols(predict(final_wflow, testing(tr_te_split), type = 'prob')) %>% 
+      bind_cols(dplyr::select(testing(tr_te_split), condition_name)) %>%
+      { . }
+
+    levs <- levels(rf_testing_pred$condition_name)
+    pred_cols <- map_chr(levs, ~glue::glue('.pred_{.x}'))
+    if (length(levs) == 2) {
+      pred_cols <- pred_cols[1]
+    }
+    AUROC <- rf_testing_pred %>%
+      roc_auc(all_of(pred_cols), truth = condition_name) %>%
+      dplyr::pull(.estimate)
+
+    stats_table <- 
+      tibble(
+        actual = testing(tr_te_split)$condition_name,
+        predicted = predict(final_wflow, testing(tr_te_split))$.pred_class
+      )
+    CM <- 
+      stats_table %>%
+      yardstick::conf_mat(actual, predicted)
+
+    for (i in 1:ncol(CM$table)) {
+      CM$table[, i] <- round(CM$table[, i] / sum(CM$table[, i]), 2)
+    }
+
+    p <- 
+      CM %>%
+      autoplot(type = 'heatmap') +
+      rotate_x_labels(45) +
+      scale_x_discrete(expand = c(0, 0)) +
+      scale_y_discrete(expand = c(0, 0)) +
+      ggtitle(glue::glue('Experiment: {experiment}\\
+          \nEx. vars: {paste(ex_vars, collapse = \', \')}\\
+          \nAUROC: {round(AUROC, 2)}'))
+
+    return(p)
+    out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+    print_plot_eval(print(p),
+      width = 10, height = 10,
+      filename = file.path(out_dir,
+        glue::glue('confusion_table_{id_part}.pdf')))
+    # autoplot(search_res, type = "parameters") + 
+    #   labs(x = "Iterations", y = NULL)
+
+  })
+
+tf <- function(x) wrap_plots(x, nrow = 4, ncol = 2)
+print_plot_eval({
+    print(tf(plots[1:8]))
+    # print(tf(plots[1:10]))
+    # print(tf(plots[1:4]))
+    # print(tf(plots[5:8]))
+    # print(tf(plots[9:10]))
+  },
+  width = 17.4, height = 27,
+  filename = file.path(out_dir,
+    glue::glue('time_informative_separability.pdf'))
+)
+```

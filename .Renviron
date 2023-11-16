@@ -1,0 +1,15 @@
+TAR_LONG_EXAMPLES=true
+p_root=~/MirjamHoekstra
+data_dir=/DATA/MirjamHoekstra'
+libs_dir=~/libs
+r_dir=~/R
+python_dir=~/MirjamHoekstra/python
+rmd_dir=~/MirjamHoekstra/Rmd
+reports_dir=~/MirjamHoekstra/reports
+rds_dir=~/MirjamHoekstra/data/rds
+img_dir=~/MirjamHoekstra/img
+data_raw_dir=~/MirjamHoekstra/data-raw
+gene_list_dir=~/MirjamHoekstra/analyses/transact/gene_lists
+raw_10q_support_dir=~/MirjamHoekstra/data/supporting_data/10x_3.0.0_ref
+external_data_dir=~/MirjamHoekstra/external_data
+RETICULATE_PYTHON="~/miniconda3/bin/python

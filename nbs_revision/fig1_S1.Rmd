@@ -1,0 +1,709 @@
+---
+title: "Figure 1"
+author: "Maarten Slagter"
+# date: "`r format(Sys.time(), '%d %B, %Y')`"
+date: "`r Sys.time()`"
+output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    toc: true
+    extra_dependencies: ["flafter"]
+---
+
+```{r, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+options('plot_force_file' = TRUE)
+make_line_plots = FALSE
+make_line_plots = TRUE
+# getOption('plot_force_file')
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig1')
+dir.create(out_dir, showWarnings = F)
+
+bulk_so <- so <- tar_read(bulk_5029_so)
+```
+
+# Panel A
+
+```{r, fig.width=17.4/2.56, fig.height=12/2.56, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+if (F) {
+  M <- subset_feats(so2M(so), read_genelist('informativeV15'))
+  # M <- t(scale(t(M)))
+  M <- log2(M + 1)
+  HM <- Heatmap(M)
+  print_plot_eval({ draw(HM) },
+    width = 17.4, height = 15,
+    filename = file.path(Sys.getenv('img_dir'),
+      glue::glue('HM_sanity_check.png')))
+}
+
+# l_HM(
+#   so = so,
+#   genes = VariableFeatures(so),
+#   filter_samples_mode = 'non_SN',
+#   fn = fn,
+#   N_hl_genes = 8,
+#   row_cluster_k = 4,
+#   col_cluster_k = 4
+# )
+hl_genes <- '
+  NLRC5
+  IRF1
+  HLA-DRA
+  ADAMTS9
+  CCL20
+  CCL2
+  IRG1
+  SLAMF8
+  UBD
+  MMP9
+  CXCL9
+' %>% line_split()
+
+l_HM(
+  so = so,
+  fn = glue::glue('exp5029_RF_genes_HM.pdf'),
+  filter_samples_mode = 'non_SN',
+  genes = setdiff(read_geneset('informativeV15'), 'NOS2'),
+  min_var = 0,
+  # N_hl_genes = 30,
+  N_hl_genes = NULL,
+  # highlight_genes = c('NLRC5', 'IRG1', 'CCL20', 'CCL2', 'IRF1',
+  #   'ADAMTS9', 'HLA-DRA'),
+  highlight_genes = hl_genes,
+  # make_line_plots = TRUE,
+  make_line_plots = make_line_plots,
+  column_clust_method = 'none',
+  row_cluster_k = NULL,
+  out_dir = out_dir
+  # col_cluster_k = 4
+  # default_row_clust_method = 'kendall',
+  # col_clust_dist_f = 'kendall'
+)
+```
+
+Gene set line plots
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+c(tar_read(default_gene_sets), tar_read(mirjam_genes),
+  tar_read(time_informative_genesets)) %>%
+  imap(function(genes, name) {
+    exp_dynamics_panel(
+      features = genes,
+      merge_cn = 'sample_name',
+      lookup_data = as.matrix(tar_read('kallisto_5029')),
+      version = name,
+      out_dir = out_dir,
+      redo = F,
+      leave_out_sn = T
+    )
+  })
+```
+
+
+# Panel B
+
+```{r, warning=FALSE}
+so <- FindVariableFeatures(so, nfeatures = 500)
+l_HM(
+  so = so,
+  genes = VariableFeatures(so),
+  fn = glue::glue('exp5029_500_most_var_genes_HM.pdf'),
+  filter_samples_mode = 'non_SN',
+  column_clust_method = 'none',
+  row_cluster_k = NULL,
+  N_hl_genes = 4,
+  make_line_plots = make_line_plots,
+  out_dir = out_dir
+  # row_cluster_k = 4,
+  # col_cluster_k = 4
+  # col_clust_dist_f = 'kendall'
+)
+```
+
+# Supp Figure S1
+
+```{r, fig.width=17.4/2.56, fig.height=12/2.56, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+
+l_HM(
+  so = so,
+  fn = glue::glue('exp5029_SN_RF_selected_genes.pdf'),
+  filter_samples_mode = 'all',
+  genes = read_geneset('informativeV15'),
+  # column_clust_method = 'none',
+  make_line_plots = make_line_plots,
+  N_hl_genes = 4,
+  # min_var = 0.25,
+  out_dir = out_dir,
+  min_var = 0.4
+  # row_cluster_k = 4,
+  # col_cluster_k = 4
+)
+```
+
+# Panel C
+
+```{r, eval=T}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+gst2gs <-
+  list(
+    'default' = tar_read(default_gene_sets)
+  ) %>%
+  # unlist(recursive = F) %>%
+  purrr::flatten() %>%
+  { .[!stringr::str_detect(names(.), 'HK')] } %>%
+  { .[!stringr::str_detect(names(.), 'CXCL10')] } %>%
+  { .[!stringr::str_detect(names(.), '6h.max')] } %>%
+  { .[!stringr::str_detect(names(.), 'TNFa.plateau')] } %>%
+  { . }
+
+map(gst2gs, length)
+
+bulk_so <- tar_read(bulk_5029_so)
+```
+
+```{r, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+set.seed(43)
+p_args <- 
+  list(
+    so = bulk_so,
+    genes = unname(unlist(gst2gs)),
+    meta_fields = c('stim_group', 'duration'),
+    filter_samples_mode = 'non_SN',
+    height = unit(6, 'cm'),
+    width = unit(4, 'cm'),
+    show_column_names = F,
+    min_var = 0,
+    column_title = ' ',
+    row_title = ' ',
+    row_gap = unit(.5, 'mm'),
+    geneset_labels = tibble::enframe(gst2gs, 'gs', 'gene') %>%
+      dplyr::mutate(gs = factor(gs, 
+          levels = c('TNFa', 'IFNy', 'synergy'))) %>%
+      tidyr::unnest(gene),
+    show_row_dend = T,
+    N_hl_genes = NULL
+  ) %>%
+  # c(list(
+  #   row_cluster_k = 5,
+  #   col_cluster_k = 4)
+  # ) %>%
+  c(list(column_clust_method = 'none')) %>% 
+  { . }
+
+HM <- do.call(GE_vs_stim_dur, p_args)
+
+print_plot_eval(
+  draw(HM, merge_legend = TRUE, heatmap_legend_side = 'top'),
+  # width = 17.4, 
+  width = 17.4, 
+  height = 15,
+  filename = file.path(out_dir,
+    glue::glue('exp5029_all_MR_genes_simple.pdf')))
+```
+
+
+```{r, eval=F, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+bulk_so <- tar_read(bulk_5029_so)
+
+gst2gs <-
+  list(
+    NULL
+    # , 'default' = tar_read(default_gene_sets)
+    , 'time_informative' = tar_read(mirjam_genes)
+    # , 'clustered_mono' = tar_read(clustered_mono_genes)
+    # , 'clustered_IFNy' = tar_read(clustered_IFNy_genes)
+    # , 'clustered_TNFa' = tar_read(clustered_TNFa_genes)
+    # , 'clustered_limma_MR' = tar_read(clustered_limma_MR_genes)
+  ) %>%
+  # unlist(recursive = F) %>%
+  purrr::flatten() %>%
+  { .[!stringr::str_detect(names(.), 'HK')] } %>%
+  { .[!stringr::str_detect(names(.), 'CXCL10')] } %>%
+  { .[!stringr::str_detect(names(.), '6h.max')] } %>%
+  { .[!stringr::str_detect(names(.), 'TNFa.plateau')] } %>%
+  { . }
+
+subset_gs <- function(cytokine = 'IFNy') {
+  gst2gs %>%
+    { .[stringr::str_detect(names(.), cytokine)] } %>%
+    { . }
+}
+
+for (cytokine in c('IFNy', 'TNFa')) {
+  # cytokine = 'IFNy'
+  # cytokine = 'TNFa'
+
+  subset_gs() %>%
+    unlist() %>%
+    duplicated() %>%
+    any() %>%
+    not() %>%
+    stopifnot()
+
+  set.seed(43)
+  geneset_labels <- 
+    subset_gs(cytokine) %>%
+    tibble::enframe(name = 'gs', value = 'gene') %>%
+    tidyr::unnest(gene) %>%
+    dplyr::filter(gene %in% detected_genes(bulk_so)) %>%
+    dplyr::distinct() %>%
+    { . }
+
+  # subset_feats(GetAssayData(bulk_so), gs_dtf$value)
+  # length(intersect(detected_genes(bulk_so), gs_dtf$value))
+
+  # ra <- rowAnnotation(
+  #   set = anno_simple(df = gs_dtf[, 1])
+  # )
+  # HeatmapAnnotation
+  # ra <- rowAnnotation(df = gs_dtf[, 1], names = gs_dtf[[2]])
+  l_HM(
+    so = bulk_so,
+    fn = glue::glue('exp5029_{cytokine}_time_informative_genes.pdf'),
+    filter_samples_mode = cytokine,
+    # left_annotation = ra,
+    show_row_names = FALSE,
+    row_dist_f = 'pearson',
+    column_clust_method = 'none',
+
+    genes = geneset_labels$gene,
+    geneset_labels = geneset_labels,
+    N_hl_genes = 5,
+    make_line_plots = F,
+
+    min_var = 0,
+    height = 15,
+    out_dir = out_dir,
+    row_cluster_k = 5
+    # col_cluster_k = 4
+  )
+}
+```
+
+
+# Panel D
+
+```{r }
+so <- tar_read(filtered_cleaned_so_5310) %>%
+  order_stim_group()
+iso <- tar_read(filtered_cleaned_informative_so_5310) %>%
+  order_stim_group()
+mso <- tar_read(filtered_cleaned_mono_informative_so_5310) %>%
+  order_stim_group()
+length(VariableFeatures(so))
+length(VariableFeatures(iso))
+length(VariableFeatures(mso))
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+## Two weird cells
+idxs <- which(so@meta.data$sample_origin == 'in_vivo' |
+  Embeddings(so, 'umap')[, 1] < 0)
+so_subs <- so[, -idxs] %>%
+  order_stim_group()
+```
+
+```{r, warning=FALSE}
+so_subs <- FindNeighbors(so_subs)
+so_subs <- FindClusters(so_subs, resolution = .1)
+
+# names(so_subs)
+# so_subs$SCT
+# devtools::install_github('theislab/kBET')
+# devtools::install('~/libs/kBET')
+library(kBET)
+
+so_subs@graphs$SCT_nn
+# so_subs@assays$SCT[VariableFeatures(so_subs), ]
+# so_subs@assays$PCA
+
+batch.estimate <- kBET::kBET(
+  Embeddings(so_subs), 
+  do.pca = FALSE,
+  so_subs@meta.data$stim_group,
+  plot = F
+)
+batch.estimate$summary
+batch.estimate$results
+batch.estimate$average.pval
+
+colSums(abs(Embeddings(so_subs)))
+dd <- as.matrix(dist(Embeddings(so_subs)))
+table(so_subs@meta.data$stim_group)
+summary(cluster:::silhouette(as.numeric(so_subs@meta.data$stim_group), dd))
+
+# as.numeric(so_subs@meta.data$stim_group)
+# batch.silhouette <- batch_sil(Embeddings(so_subs), so_subs@meta.data$stim_group)
+# print_plot_eval(
+#   {
+#     print(batch.estimate)
+#   },
+#   width = 17.4, height = 10,
+#   filename = file.path(out_dir,
+#     glue::glue('in_vitro_kbet.pdf')))
+
+# so_iv <- so[, so@meta.data$sample_origin == 'in_vitro']
+# table(so_iv@meta.data$seurat_clusters)
+
+funtimes::purity(
+  so_subs@meta.data$stim_group,
+  so_subs@meta.data$seurat_clusters
+)
+```
+
+```{r}
+plots <-
+  purrr::map(c('stim_group', 'seurat_clusters'), function(vn) {
+    p <-
+      DimPlot(
+        so_subs,
+        pt.size = 2,
+        # group.by = 'stim_group',
+        group.by = vn,
+        label.size = 2,
+        # split.by = 'sample_origin',
+        label = FALSE,
+        raster = FALSE
+      ) +
+      theme_cyto_inf() +
+      guides(colour = guide_legend(ncol = 2)) +
+      ggtitle('') +
+      # gg_legend_alpha_cancel
+      guides(color = guide_legend(
+        override.aes = list(alpha = 1),
+        ncol = 2)
+      )
+    if (vn == 'stim_group') {
+      p <- p + scale_colour_stim_group(so_subs@meta.data)
+    }
+    return(p)
+  })
+fn <- file.path(out_dir, 'exp5310_UMAP.pdf')
+p <- wrap_plots(
+  plots = plots,
+  # guides = 'collect',
+  ncol = 2, nrow = 1
+)
+print_plot_eval(print(p), width = 17.4, height = 10, filename = fn)
+```
+
+```{r}
+sa <- extract_sa(so_subs) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+coords <- Embeddings(so_subs, 'umap') %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('cell_id')
+p_dat <- merge(sa, coords, by='cell_id')
+head(p_dat)
+
+p <-
+  ggplot(p_dat, aes(x=UMAP_1, y=UMAP_2, color=stim_group)) +
+  ggrastr::rasterise(geom_point(size=2, alpha=.5), dpi=300) +
+  theme_cyto_inf() +
+  guides(color = guide_legend(ncol = 2)) +
+  ggtitle('') +
+  guides(color = guide_legend(
+    override.aes = list(alpha = 1),
+    ncol = 2)) + 
+  scale_colour_stim_group(p_dat)
+
+fn <- file.path(out_dir, 'exp5310_UMAP.pdf')
+print_plot_eval(print(p), width = 17.4, height = 10, filename = fn)
+```
+
+# Intermezzo
+
+(Not in publication but useful) Experiment description table
+
+```{r, eval=F, fig.width=17.4/2.56, fig.height=12/2.56, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+# desc_dtf <- tar_read(experiment_descriptive_table)
+
+desc_dtf <-
+  purrr::map_dfr(c(bulk_e, sc_e), function(.x) {
+    targets::tar_read_raw(glue::glue('read_count_summary_{.x}')) %>%
+      dplyr::mutate(experiment = .x)
+  })
+
+# find_targets('read_count_summary')
+
+param_explanation_table <-
+  desc_dtf %>%
+  {
+    set_colnames(.,
+      stringr::str_replace_all(colnames(.), '_', ' ') %>%
+      simple_cap(
+        cap_first_word_only = T,
+        caplist = c('CV', 'Experiment', 'Type', 'SD', 'size')
+      )
+    )
+  } %>%
+  dplyr::mutate(
+    across(
+      matches('library'),
+      maartenutils::fancy_scientific,
+      parse = F
+    )
+  ) %>%
+  dplyr::mutate(
+    across(
+      matches('library'),
+      unlist,
+      recursive = F
+    )
+  ) %>%
+  dplyr::mutate('Description' =
+    c(
+      '>24h exposure durations',
+      'More exhaustive IFNy and TNFa combinations',
+      'Even more exhaustive IFNy and TNFa combinations',
+      'Investigating transcriptome reversal after signal removal',
+      '4 in vitro conditions, 2 in vivo conditions at 44h after T-cell injection',
+      'Exhaustive IFNy titration',
+      'Exhaustive SN titration',
+      'In vivo with and without T-cells at 16/44h after T-cell injection',
+      'Positive control: in vivo cytokine injection',
+      'Positive control: ex vivo cytokine stimulation'
+    )
+  ) %>%
+  # debug_pipe %>%
+  dplyr::mutate(Description = map_chr(Description,
+      stringr::str_wrap, width = 20L)) %>%
+  dplyr::relocate(Description, .after = Type) %>%
+  gridExtra::tableGrob(
+    rows = NULL,
+    theme = gridExtra::ttheme_default(
+      base_family = 'Arial_MT',
+      base_size = 6,
+      core = list(fg_params = list(parse=T), hjust = 1),
+      padding = grid::unit(c(2, 2), 'mm'),
+      colhead = list(fg_params = list(parse=F))
+    )
+  )
+print_plot_eval(
+  {
+    plot(param_explanation_table)
+  },
+  width = 17.4, height = 12,
+  filename = file.path(Sys.getenv('img_dir'),
+    glue::glue('exp_describe_table.pdf')))
+```
+
+# Panel E 
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 3 #5310 in vivo
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = idx)
+experiment <- get_obj('experiment')
+
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names() %>%
+  dplyr::filter(sample_origin == 'in_vivo') %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+for (fn in c('IFNy', 'TNFa', 'synergy', 'IFNy.late', 'IFNy.plateau',
+    'TNFa.early')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      fn_add = '5310_in_vivo',
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+source(file.path(Sys.getenv('r_dir'), 'get_knit_params.R'))
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = 1L)
+# get_obj('all_univariate_gs_comps')
+
+
+gst2gs <-
+  list(
+    'default' = names(tar_read(default_gene_sets)),
+    'HM' = names(tar_read(human_HM_genesets))[c(1, 6, 19)]
+  ) %>%
+  tibble::enframe('type', 'gs') %>%
+  tidyr::unnest(cols = gs)
+
+univariate_gs_comps <-
+  get_obj('all_univariate_gs_comps') %>%
+  dplyr::right_join(gst2gs, by = 'gs') %>%
+  tidyr::unnest_wider(comp_levs) %>%
+  dplyr::mutate(
+    cn1 = map_chr(condition_name, ~.x[[1]]),
+    cn2 = map_chr(condition_name, ~.x[[2]])
+  ) %>%
+  dplyr::select(-condition_name, -comp_name, -type) %>%
+  dplyr::filter(!is.na(AUROC)) %>%
+  { . }
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+univariate_gs_auc_plots(
+  univariate_gs_comps,
+  expected_conditions = unique(univariate_gs_comps$cn1)[1:4],
+  o_fn = file.path(out_dir,
+    glue::glue('auroc_all_conditions_5310.pdf')))
+
+
+cns <- colnames(get_obj('GS_p_dat'))[c(36, 41, 54, 53)]
+cns <- colnames(get_obj('GS_p_dat'))[c(1)]
+cns <- names(tar_read(human_HM_genesets))[c(1, 6, 19)]
+
+cns <- paste0(cns, '.vanilla.unweighted.sum')
+cns %in% colnames(get_obj('GS_p_dat'))
+
+for (fn in cns) {
+  for (plot_lgd in c(F)) {
+    mk_ann_GS_vln(
+      p_dat = get_obj('GS_p_dat') %>%
+        dplyr::filter(sample_origin == 'in_vitro') %>%
+        dplyr::filter(sc_digestion == FALSE)
+      ,
+      cn_mode = 'all',
+      fn = fn,
+      fn_add = '5310_in_vitro',
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names() %>%
+  dplyr::filter(sample_origin == 'in_vitro') %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+compute_all_pairwise_medians(GS_p_dat) %>%
+  write_tsv(file.path(out_dir, 'pairwise_gs_comp_stats_5310_in_vitro.tsv'))
+```
+
+# Panel F & G
+
+```{r, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+
+for (idx in c(8, 10, 12)) {
+# for (idx in c(12)) {
+# for (idx in c(12, 13)) {
+  load_prereqs(param_grid = tab, idx = idx)
+  # tab[idx, ]
+
+  source(file.path(r_dir, 'GS_time_inference.R'))
+  eval(time_inference_preproc)
+
+  # out_dir <- file.path(Sys.getenv('img_dir'), 'fig4', report_cp)
+  # dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  subs_conditions <- list(ref_condition, subs_condition,
+    subs_condition, subs_condition)
+  ref_conditions <- list(NULL, ref_condition, ref_condition, 
+    ref_condition)
+
+  subs_conditions <- list(subs_condition)
+  ref_conditions <- list(ref_condition)
+
+  ## First make plot of unnormalized ref
+  # tibble(
+  #   description = c('unstim_ref', 'all_cells', 'top10', 'top10'),
+  #   perc = c(NA_real_, NA_real_, .90, .90),
+  #   anchor_gs = c(NA_character_, NA_character_, 'IFNy', 'TNFa')
+  # ) %>%
+  tibble(
+    description = c('all_cells'),
+    perc = c(NA_real_),
+    anchor_gs = c(NA_character_)
+  ) %>%
+  dplyr::mutate(i = 1:n()) %>%
+  purrr::pmap(function(description, perc, anchor_gs, i) {
+    p_dat <-
+      GS_p_dat %>%
+      nest_by(duration) %>%
+      dplyr::summarize(
+        data %>%
+        normalize_gs(
+          ref_condition = ref_conditions[[i]]
+        ) %>%
+        filter_anchor_thresh(
+          anchor_gs = anchor_gs,
+          mode = '>=',
+          ref_condition = ref_conditions[[i]],
+          perc = perc
+        ) %>%
+        { . }
+      ) %>%
+      { . }
+    plots <-
+      p_dat %>% {
+        if (!is.null(subs_conditions[[i]]))
+          dplyr::right_join(., subs_conditions[[i]])
+        else .
+      } %>%
+      shuffle_rows() %>%
+      make_all_tgs_scatter_plots(
+        colour_var = 'duration',
+        balanced_axes = F,
+        comps = tribble(
+          ~x_var, ~y_var,
+          'IFNy', 'TNFa',
+          'IFNy.plateau', 'IFNy.late',
+          'IFNy.late', 'IFNy.plateau',
+          'TNFa.early', 'TNFa.late'
+        )
+      )
+    fn <- file.path(out_dir,
+      glue::glue('time_gs_scatters\\
+        {make_flag(experiment)}\\
+        {make_flag(description)}\\
+        {make_flag(anchor_gs)}\\
+        {make_flag(perc)}.pdf')
+      )
+    plot_panel_layout(
+      plots = plots, ncol = 2, nrow = 3, clear_redundant_legends = F,
+      width = 17.4, height = 25, filename = fn, labels = NULL
+    )
+  })
+
+}
+```
+
+See also the file `gene_set_time_inference_figures.Rmd`

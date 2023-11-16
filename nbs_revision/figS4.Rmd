@@ -1,0 +1,330 @@
+# Panel B
+
+```{r }
+xoff = .02
+yoff = .05
+
+GS_p_dat <- tar_read(GS_p_dat_5310_simple_reference)
+colnames(GS_p_dat) <-
+  stringr::str_replace(colnames(GS_p_dat),
+    '.vanilla.unweighted.sum', '')
+
+x_var <- 'IFNy'
+y_var <- 'TNFa' 
+
+qs <- GS_p_dat %>%
+  dplyr::filter(stringr::str_detect(cn_simple, 'vivo')) %>%
+  {
+    map_dfc(auto_name(c(x_var, y_var)),
+      function(.x) retrieve_anchor_thresh(.,
+        perc = .95,
+        ref_condition = tibble('stim_group' = 'Unexposed in vivo'),
+        anchor_gs = .x)$q9)
+  }
+
+```
+
+```{r, warning=FALSE}
+perc_labels <- 
+  GS_p_dat %>%
+  dplyr::filter(stringr::str_detect(cn_simple, 'vivo')) %>%
+  dplyr::nest_by(cn_simple) %>%
+  dplyr::summarize(
+    compute_perc_labels(data, qs)
+  ) %>%
+  { . }
+
+thresholds <-
+  GS_p_dat %>%
+  dplyr::filter(stringr::str_detect(cn_simple, 'vivo')) %>%
+  dplyr::distinct(cn_simple) %>%
+  dplyr::mutate(
+    xintercept = qs$IFNy,
+    yintercept = qs$TNFa
+  )
+
+GS_p_dat %>%
+  dplyr::nest_by(cn_simple) %>%
+  dplyr::summarize(cor(data$IFNy, data$TNFa, method = 'spearman'))
+
+p <- GS_p_dat %>%
+  dplyr::filter(percent.mt <= 25) %>%
+  ggplot(
+    aes_string(
+      x = glue('IFNy'),
+      y = glue('TNFa'),
+      colour = glue('synergy'))
+    ) +
+  geom_point() +
+  # geom_smooth(method = 'loess') +
+  geom_smooth(method = 'lm') +
+  ggpp::geom_text_npc(data = perc_labels,
+    mapping = aes(npcx = npc_x, npcy = npc_y, 
+      label = round(value, 2))) +
+  scale_colour_viridis_c(name = 'Synergy score') +
+  theme_cyto_inf(legend.position = 'bottom') +
+  geom_hline(data = thresholds, mapping = aes(yintercept =
+      yintercept)) +
+  geom_vline(data = thresholds, mapping = aes(xintercept =
+      xintercept)) +
+  xlab('IFNy score') +
+  facet_wrap(~cn_simple, nrow = 3) +
+  ylab('TNFa score') +
+  ggtitle('')
+
+print_plot_eval(
+  print(p),
+  width = 17.4, height = 15,
+  filename = file.path(out_dir,
+    glue::glue('5310_synergy_scatter.pdf')))
+```
+
+```{r, warning=FALSE}
+compute_OE <- function(dtf,
+  ref_condition = tibble('stim_group' = 'Unexposed in vivo')) {
+  tidyr::expand_grid(
+    # ref = rev(c('unexposed_same_duration', 'same_duration', 'itself'))
+    ref = rev(c('itself'))
+  ) %>%
+  dplyr::mutate(., p = pmap(., function(ref) {
+    dplyr::nest_by(dtf, duration) %>%
+    dplyr::summarize({
+      if (ref == 'unexposed_same_duration') {
+        qs <- map_dfc(auto_name(c('IFNy', 'TNFa')),
+          ~retrieve_anchor_thresh(data,
+            perc = .95,
+            ref_condition = ref_condition,
+            anchor_gs = .x)$q9)
+        # print(qs)
+        bin_data <- 
+          dplyr::mutate(data,
+            IFNy_hi = IFNy > qs$IFNy,
+            TNFa_hi = TNFa > qs$TNFa
+          )
+      } else if (ref == 'same_duration') {
+        qs <- tibble(
+          IFNy = quantile(data$IFNy, .95),
+          TNFa = quantile(data$TNFa, .95)
+        )
+        bin_data <- 
+          dplyr::mutate(data,
+            IFNy_hi = IFNy > qs$IFNy,
+            TNFa_hi = TNFa > qs$TNFa
+          )
+      } else if (ref == 'itself') {
+        bin_data <- 
+          data %>%
+            nest_by(stim_group) %>%
+            dplyr::summarize({
+              qs <- map_dfc(auto_name(c('IFNy', 'TNFa')),
+                ~retrieve_anchor_thresh(
+                  dtf = data,
+                  perc = .95,
+                  ref_condition = NULL,
+                  anchor_gs = .x)$q9
+                )
+              dplyr::mutate(data,
+                IFNy_hi = IFNy > qs$IFNy,
+                TNFa_hi = TNFa > qs$TNFa
+              )
+            })
+
+      }
+
+      bin_data %>%
+        dplyr::group_by(cn_simple) %>%
+        dplyr::summarize(
+          Q1 = sum(!TNFa_hi & !IFNy_hi),
+          Q2 = sum(TNFa_hi & !IFNy_hi),
+          Q3 = sum(IFNy_hi & !TNFa_hi),
+          Q4 = sum(IFNy_hi & TNFa_hi)
+        ) %>%
+        dplyr::group_by(cn_simple) %>%
+        dplyr::summarize(
+          p = {
+            M <- matrix(c(Q1, Q2, Q3, Q4), nrow = 2, byrow = T,
+              dimnames = list(
+                TNFa = c('lo', 'hi'),
+                IFNy = c('lo', 'hi')
+              )
+            )
+            # M <- M[2:1, 2:1]
+            broom::tidy(fisher.test(M))
+            # broom::tidy(chisq.test(M))
+          }
+        ) %>%
+        tidyr::unnest(p)
+    })
+  })) %>%
+  tidyr::unnest(p) %>%
+  dplyr::arrange(cn_simple, ref) %>%
+  # dplyr::mutate(reference = ifelse(unexposed_ref,
+  #     glue::glue('{ref_condition$stim_group}, same duration'), 
+  #     glue::glue('Same duration'))) %>%
+  dplyr::mutate(stim_group = recover_stim_group(cn_simple)) %>%
+  dplyr::select(-method, -alternative, -cn_simple) %>%
+  dplyr::select(stim_group, duration, ref, everything()) %>%
+  {
+    if (length(unique(.$duration)) == 1) {
+      dplyr::select(., -duration)
+    } else {
+      .
+    }
+  } %>%
+  dplyr::mutate(across(where(is.numeric), ~signif(.x, 2))) %>%
+  { . }
+}
+
+print_plot_eval({
+    GS_p_dat_6601 %>%
+      compute_OE(
+        ref_condition = tibble('stim_group' = 'Unexposed in vivo')
+      ) %>%
+      dplyr::arrange(duration, stim_group, ref) %>%
+      draw_table(draw_immediately = T)
+  },
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('6601_table.pdf')))
+
+print_plot_eval({
+    GS_p_dat_5310 %>%
+      dplyr::filter(duration == 'Unknown') %>%
+      compute_OE(
+        ref_condition = tibble('stim_group' = 'Unexposed in vivo')
+      ) %>%
+      dplyr::arrange(duration, stim_group, ref) %>%
+      draw_table(draw_immediately = T)
+  },
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('5310_in_vivo_table.pdf')))
+
+print_plot_eval({
+    GS_p_dat_5310 %>%
+      dplyr::filter(duration != 'Unknown') %>%
+      compute_OE(
+        ref_condition = tibble('stim_group' = 'Unstimulated in vitro')
+      ) %>%
+      dplyr::arrange(duration, stim_group, ref) %>%
+      draw_table(draw_immediately = T)
+  },
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('5310_in_vitro_table.pdf')))
+```
+
+# Panel D
+
+```{r, echo = FALSE options}
+idx = 16 #6601 simple
+load_prereqs(param_grid = tab, idx = idx)
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name()
+colnames(GS_p_dat) <-
+  stringr::str_replace(colnames(GS_p_dat),
+    '.vanilla.unweighted.sum', '')
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(duration != 48)
+GS_p_dat$stim_group <- droplevels(GS_p_dat$stim_group)
+GS_p_dat$duration <- droplevels(GS_p_dat$duration)
+```
+
+```{r }
+if (interactive() && !test_rendering())
+source('~/MirjamHoekstra/R/init.R')
+
+tidyr::expand_grid(
+  q_gs = c('IFNy', 'TNFa', 'synergy')
+) %>%
+purrr::pmap(function(q_gs) {
+  mk_ann_GS_vln(
+    p_dat = GS_p_dat,
+    cn_mode = 'all',
+    fn = q_gs,
+    out_dir = out_dir,
+    experiment = '6601',
+    return_mode = 'file',
+    p_values = 'reference',
+    plot_lgd = FALSE
+  )
+})
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 16 #6601 all
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = idx)
+experiment <- get_obj('experiment')
+
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+```
+
+```{r, warning=FALSE}
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('Unexposed in vivo - 24h',
+      'Unexposed in vivo - 48h',
+      '100 ng/ml IFNy - 24h',
+      '100 ng/ml IFNy - 48h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+for (fn in c('IFNy', 'TNFa', 'synergy')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      fn_add = '6601_IT_48vs24h_IFNy',
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = experiment,
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+x_var <- 'IFNy'
+y_var <- 'TNFa' 
+duration = 6
+for (duration in unique(GS_p_dat$duration)) {
+  print(duration)
+  qs <- GS_p_dat %>%
+    dplyr::filter(duration == .env[['duration']]) %>%
+    {
+      map_dfc(auto_name(c(x_var, y_var)),
+        function(.x) retrieve_anchor_thresh(.,
+          perc = .95,
+          ref_condition = tibble('stim_group' = 'Unexposed in vivo'),
+          anchor_gs = .x)$q9)
+    }
+
+  perc_labels <- 
+    GS_p_dat %>%
+    dplyr::filter(duration == .env[['duration']]) %>%
+    dplyr::nest_by(cn_simple) %>%
+    dplyr::summarize(
+      compute_perc_labels(data, qs)
+      ) %>%
+    { . }
+
+  # print(perc_labels)
+
+  perc_labels %>%
+    group_by(cn_simple) %>%
+    dplyr::summarize(
+      'top' = sum(value[name %in% c('Q2', 'Q4')]),
+      'right' = sum(value[name %in% c('Q3', 'Q4')])
+    ) %>%
+    print()
+}
+```

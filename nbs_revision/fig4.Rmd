@@ -1,0 +1,1406 @@
+# Panel B
+
+```{r }
+so <- tar_read(filtered_cleaned_so_6743_manual)
+
+so_s <- ComputeGeneSetScores(
+  so = so,
+  assay = 'SCT',
+  datatype = 'counts',
+  weighting_funcs = all_weighting_funcs['unweighted'],
+  genesets = map(mono_gs, ~intersect(.x, true_MRs)),
+  simplify_names = T
+)
+
+if (F) {
+  so_s[['sga']] <- paste(unlist(so_s[['stim_group']]), '-', 
+    unlist(so_s[['dbscan_cluster']]))
+}
+
+so_s <- order_stim_group(so_s)
+so_s[['sga']] <- so_s[['stim_group']]
+# so_s@meta.data$stim_group
+# so_s@meta.data$sga
+fns <- rownames(so_s[['GS']])
+fns <- c('IFNy-mono', 'TNFa-mono')
+
+GS_p_dat <- assay2dtf(so_s, 'GS', 
+  s_vars = c('condition_name', 'sample_origin', 'ifn_conc',
+    'sn_dilution', 'percent.mt', 'tnf_conc', 'duration',
+    'dbscan_cluster', 'sga'))
+```
+
+```{r mouse-sc-violins, eval=F, warning=FALSE, fig.width = 12/2.56, fig.height = 10/2.56}
+if (interactive())
+  source('~/MirjamHoekstra/R/init.R')
+purrr::walk(fns, function(fn) {
+  # p <- plot_vln(so_s, fn = fn, 
+  #   assay = 'GS', group_var = 'sga', pt.size = .02) +
+  p <- plot_vln(GS_p_dat, fn = fn, 
+    group_var = 'sga', pt.size = .02) +
+    scale_x_discrete(expand = c(0, 0))
+    # ggpubr::stat_compare_means(
+    #   label = "p.signif",
+    #   method = "wilcox.test",
+    #   ref.group = 'Mix PBS',
+    #   label.x.npc = .5,
+    #   label.y.npc = 1,
+    #   colour = 'indianred3'
+    # )
+    # ggtitle(with(long_gene_cluster_names, gcn[which(gc == fn)]))
+  pe <- rlang::expr({ print(p) })
+  print_plot_eval(!!pe, width = 12, height = 10,
+    filename = file.path(out_dir,
+      glue::glue('violin_{fn}.pdf')))
+})
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+GS_p_dat <- 
+  assay2dtf(so_s, 'GS') %>%
+  format_gs_names() %>%
+  dplyr::mutate(stim_group = factor(stim_group, 
+      levels = c('Mix PBS', 'Ag-GAS + T', 'Mix + T')))
+
+for (fn in colnames(GS_p_dat)[1:2]) {
+  mk_ann_GS_vln(
+    p_dat = GS_p_dat,
+    cn_mode = 'all',
+    fn = fn,
+    out_dir = out_dir,
+    experiment = '6743',
+    return_mode = 'file',
+    p_values = 'reference',
+    plot_lgd = F
+  )
+}
+```
+
+```{r }
+compute_all_pairwise_medians(GS_p_dat) %>%
+  write_tsv(file.path(out_dir, 'pairwise_gs_comp_stats_6743_mouse_in_vivo.tsv'))
+```
+
+# Panel C 
+
+Test neighbourhoods for enrichment of a condition
+
+```{r }
+# list.files('~/MirjamHoekstra/R')
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+out_dir <- file.path(Sys.getenv('img_dir'), 'fig4')
+dir.create(out_dir, showWarnings = F)
+
+mouse_genes <- tar_read(mono_reporters_mouse)$gene
+so <- tar_read(filtered_cleaned_so_6743_manual)
+if (F) {
+  sce <- tar_read(sce_mouse)
+} else {
+  sce <- tar_read(sce_mouse_var_genes)
+}
+library(miloR)
+library(SingleCellExperiment)
+reducedDim(sce)
+
+tM <- tar_read(tM_mouse)
+# tar_make(names = sce_mouse_var_genes)
+# limma_MRs <- tar_read(stringent_limma_MRs_mouse)
+sample_annotation <- tar_read(sample_annotation_mouse)
+exp5892 <- tar_read(bulk_5892_so)
+
+if (!exists('so') || so@meta.data$exp[1] != '6743') {
+  so <- tar_read(filtered_so_6743)
+  sg_levs <- c('Mix PBS', 'Ag-GAS + T', 'Mix + T')
+  stopifnot(all(so@meta.data$stim_group %in% sg_levs))
+  so@meta.data$stim_group <- factor(so@meta.data$stim_group,
+    levels = sg_levs)
+}
+
+## Remove IFNa
+limma_MR_params <- tar_read(limma_MR_params_mouse)
+M_cpm <- tar_read(M_cpm_mouse)
+tM <- tar_read(tM_mouse)[, -2]
+# tM <- tar_read(tM_mouse)
+# tM <- tar_read(tM_mouse)[, c(3, 5, 6, 7)]
+RC  <- tM >= limma_MR_params$LL
+# RC  <- tM >= 3
+NRC <- tM < limma_MR_params$UL
+MRs <- names(which(
+  apply(RC[, 1:5], 1, sum) == 1 &
+  apply(NRC[, 1:5], 1, sum) >= 4 &
+  # abs(apply(tM[, 4:5], 1, sum) - tM[, 6]) <= limma_MR_params$SD &
+  T
+))
+
+# non_combo_MRs <- names(which(
+#   apply(RC[, 1:5], 1, sum) == 1 &
+#   apply(NRC[, 1:5], 1, sum) >= 4
+# ))
+
+f_genes <- rownames(tar_read(f_gene_var_mouse))
+gene_sets <- 
+  MRs %>%
+  # non_combo_MRs %>%
+  { tapply(., colnames(tM)[apply(RC[., 1:5], 1, which.max)], list) } %>%
+  map(~intersect(.x, f_genes)) %>%
+  { setNames(., gsub('.* ng/ml ', '', names(.))) }
+
+gene_sets[['IFNy']] <- mirjam_genes_220516$IFNy_mono
+gene_sets[['TNFa']] <- mirjam_genes_220516$TNFa_mono
+
+map(gene_sets, length)
+sum(map_int(gene_sets, length))
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+```
+
+```{r}
+library(miloR)
+library(SummarizedExperiment)
+
+print_plot_eval(print(plotNhoodSizeHist(sce)),
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('mouse_Nhood_sizes.pdf')))
+
+sce <- countCells(
+  sce,
+  meta.data = data.frame(colData(sce)),
+  samples = c('condition_i')
+  # samples = c('stim_group')
+)
+# head(nhoodCounts(sce))
+
+design_M <-
+  data.frame(colData(sce)) %>%
+  # tibble::rownames_to_column('sample_name') %>%
+  dplyr::select(
+    condition_i, duration, stim_group,
+    matches('mouse')
+  ) %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(condition_i) %>%
+  set_rownames(NULL) %>%
+  # { set_rownames(., .$sample_name) }
+  { . }
+design_M <- model.matrix(~1 + stim_group, design_M) %>%
+  as.data.frame()
+colnames(design_M) <- colnames(design_M) %>%
+  stringr::str_replace_all(' |\\+|-', '_')
+
+all_NH_test_DA <-
+  colnames(design_M)[2:ncol(design_M)] %>%
+  auto_name() %>%
+  map(function(cn) {
+    testNhoods(
+      sce,
+      model.contrasts = cn,
+      # model.contrasts = 'stim_groupAg_GAS___T',
+      design = ~ stim_groupMix___T + stim_groupAg_GAS___T,
+      design.df = as.data.frame(design_M)
+    ) %>%
+    dplyr::mutate(Nhood = unlist(nhoodIndex(sce))) %>%
+    { set_rownames(., .$Nhood) } %>%
+    # dplyr::arrange(desc(logFC)) %>%
+    { . }
+  })
+
+sce_s <- sce[, colData(sce)$stim_group == 'Mix + T']
+sce@nhoods[colData(sce)$stim_group == 'Mix + T', ]
+
+NH_test_DA <- all_NH_test_DA[['stim_groupMix___T']]
+# all_NH_test_DA[[2]]$SpatialFDR <= 0.05
+```
+
+```{r, warning=FALSE}
+# nrow(all_NH_test_DA[[vn]])
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+for (vn in names(all_NH_test_DA)) {
+  mcat <- function(...) cat(..., '\n')
+
+  mcat('\nStim group:', vn)
+  mcat('\nEnriched')
+  idx <- 
+    which(with(all_NH_test_DA[[vn]], SpatialFDR <= .05 & logFC > 0))
+  mcat(length(idx), 'Nhood(s)')
+  mcat(frac_included_cells(sce, 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+  mcat(frac_included_cells(sce, 
+      allowed_cells = which(colData(sce)$stim_group == 'Mix + T'), 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+
+  mcat('\nDepleted')
+  idx <- 
+    which(with(all_NH_test_DA[[vn]], SpatialFDR <= .05 & logFC < 0))
+  mcat(length(idx), 'Nhood(s)')
+  mcat(frac_included_cells(sce, 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+  mcat(frac_included_cells(sce, 
+      allowed_cells = which(colData(sce)$stim_group == 'Mix + T'), 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+  mcat(frac_included_cells(sce, 
+      allowed_cells = which(colData(sce)$stim_group == 'Mix PBS'), 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+  mcat(frac_included_cells(sce, 
+      allowed_cells = which(colData(sce)$stim_group == 'Ag-GAS + T'), 
+      allowed_Nhoods = as.character(all_NH_test_DA[[vn]]$Nhood[idx])))
+}
+# NH_test_DA <-
+#   testNhoods(
+#     sce,
+#     model.contrasts = 'stim_groupMix___T',
+#     # model.contrasts = 'stim_groupAg_GAS___T',
+#     design = ~ stim_groupMix___T + stim_groupAg_GAS___T,
+#     design.df = as.data.frame(design_M)
+#   ) %>%
+#   dplyr::arrange(desc(logFC))
+```
+
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+library(miloR)
+
+rename_mouse_stimgroup <- function(dtf) {
+  dtf <- order_stim_group(dtf)
+  dtf$stim_group <- forcats::lvls_revalue(
+    dtf$stim_group,
+    new_levels = c('Control', 'Ag- T-cell', 'Ag+ T-cell')
+  )
+  return(dtf)
+}
+
+p_dat <-
+  as.data.frame(cbind(colData(sce), reducedDim(sce, 'UMAP'))) %>%
+  order_stim_group() %>%
+  order_duration() %>% 
+  rename_mouse_stimgroup() %>%
+  { . }
+if (F) {
+  p_dat$UMAP_1
+  p_dat$UMAP_2
+  p_dat$stim_group
+  p_dat$duration
+}
+
+p <-
+  plot_dim_reduc(
+    p_dat,
+    coord_regex = 'UMAP_',
+    colour_var = 'stim_group',
+    use_stim_group_cols = FALSE,
+    shape_var = NULL
+  ) +
+  theme(legend.position = 'bottom') +
+  guides(
+    color = guide_legend(
+      ncol = 1,
+      override.aes = list(alpha = 1)
+    )
+  ) +
+  theme()
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+# p2 <- plotNhoodGraphDA(sce, da_results, layout="umap",alpha=0.05)
+p2 <- plotNhoodGraphDA(
+  x = sce,
+  layout = 'UMAP',
+  # milo_res = NH_test_DA[match(unlist(nhoodIndex(sce)),
+  #   NH_test_DA$Nhood), ],
+  milo_res = all_NH_test_DA[[1]],
+  alpha = .05) +
+  theme_cyto_inf() +
+  theme(plot.title = element_text(hjust = .5)) +
+  scale_fill_gradient2(
+    name = 'logFC DA', 
+    limits = range(all_NH_test_DA[[2]]$logFC)
+  ) +
+  theme_tabula_rasa +
+  ggtitle('Ag- T-cell')
+
+p3 <- plotNhoodGraphDA(
+  x = sce,
+  layout = 'UMAP',
+  # milo_res = NH_test_DA[match(unlist(nhoodIndex(sce)),
+  #   NH_test_DA$Nhood), ],
+  milo_res = all_NH_test_DA[[2]],
+  alpha = .05) +
+  theme_cyto_inf() +
+  theme_tabula_rasa +
+  theme(plot.title = element_text(hjust = .5)) +
+  scale_fill_gradient2(
+    name = 'logFC DA', 
+    limits = range(all_NH_test_DA[[2]]$logFC)
+  ) +
+  ggtitle('Ag+ T-cell')
+
+print_plot_eval(
+  print((p + plot_spacer()) / (p2 + p3 + plot_layout(guides = 'collect'))),
+  width = 17.4, height = 20,
+  filename = file.path(
+    out_dir,
+    glue::glue('mouse_Nhood_HL_UMAP.pdf')
+  )
+)
+```
+
+
+```{r, echo = FALSE options}
+gene = 'Ckb'
+gene = 'Itga5'
+gene = 'Smad7'
+gene = 'Gjb3'
+colData(sce)[[gene]] <- NA_real_
+colData(sce)[[gene]][as.integer(colnames(nhoodExpression(sce)))] <-
+  # unname(nhoodExpression(sce)[gene, ])
+  unname(min_max_scaling(nhoodExpression(sce)[gene, ]))
+
+colData(sce)[[gene]]
+
+p0 <- plotNhoodGraph(
+  x = sce,
+  colour_by = gene) +
+  theme_cyto_inf() +
+  gg_tabula_rasa +
+  xlab('') +
+  ylab('') +
+  guides(size = 'none', edge = 'none') +
+  theme(legend.position = 'right', legend.direction = 'vertical')
+
+print_plot_eval(print(p0),
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('{gene}_Nhoods.pdf')))
+```
+
+# Panel D
+
+Compare T-cell exposed to non-exposed using Milo
+Globally, which genes associate with T-cell exposed cells?
+
+```{r }
+# gene_idxs <- which(dge_smp$logCPM_6 >= mean(dge_smp$logCPM_6))
+
+Nhood_expression <- calcNhoodExpression(sce)
+
+M_cpm <- tar_read(M_cpm_mouse)
+# meanE <- apply(M_cpm, 1, mean)
+# maxE <- apply(M_cpm, 1, max)
+# gene_idxs <- which(meanE >= mean(maxE))
+# gene_idxs <- which(maxE >= mean(maxE))
+# setdiff(names(cors), names(gene_idxs))
+# setdiff(names(gene_idxs), names(cors))
+
+cors_fn <- file.path(rds_dir, 'DA_gene_cors_mouse.rds')
+cors_fn <- file.path(rds_dir, 'DA_gene_cors_mouse_all_genes.rds')
+cors_fn <- file.path(rds_dir, 'DA_gene_cors_mouse_all_genes_var_genes.rds')
+if (!file.exists(cors_fn)) {
+  cors <-
+    rownames(assay(Nhood_expression, 'logcounts')) %>%
+    intersect(rownames(M_cpm)) %>%
+    auto_name() %>%
+    purrr::map(function(g) {
+      cor(
+        NH_test_DA$logFC,
+        assay(Nhood_expression, 'logcounts')[g, NH_test_DA$Nhood],
+        method = 'spearman'
+      )
+    }) %>%
+    # setNames(rownames(Nhood_expression)[gene_idxs])
+    { . }
+  cors <- unlist(cors)
+  # quantile(cors, seq(0, 1, .05))
+  saveRDS(cors, cors_fn)
+} else {
+  cors <- readRDS(cors_fn)
+}
+```
+
+# Panel B
+
+```{r, warning=FALSE}
+source('~/MirjamHoekstra/R/plot_DA_panel.R')
+N = 250
+feats <-
+  names(sort(abs(cors))) %>%
+  { intersect(., rownames(Nhood_expression)) } %>%
+  tail(n = N)
+plot_DA_panel(
+  genes = feats,
+  row_title = glue::glue('{N} most strongly correlated genes'),
+  of = file.path(out_dir,
+    glue::glue('top{N}_DA_panel.pdf'))
+)
+
+cors[c('Vim', 'Fn1', 'Cdh2')]
+cors[c('Cdh1')]
+summary(cors[hallmark_gs[["Interferon gamma response"]]])
+summary(cors[hallmark_gs[["TNFa signaling via NFkB"]]])
+summary(cors[hallmark_gs[["TGF beta signaling"]]])
+summary(cors[hallmark_gs[["Epithelial mesenchymal transition"]]])
+summary(cors)
+
+
+summary(cors[intersect(names(cors), gene_sets[['TGFb']])])
+table(sign(cors[intersect(names(cors), gene_sets[['TGFb']])]))
+
+# summary(cors[intersect(names(cors), TGFb_MRs)])
+# table(sign(cors[intersect(names(cors), TGFb_MRs)]))
+
+plot_DA_panel(
+  genes = gene_sets[['TGFb']],
+  row_title = 'TGFb mono-responsive genes',
+  of = file.path(out_dir,
+    glue::glue('TGFb_responsive_genes_DA_panel.pdf'))
+)
+```
+
+Not in paper: pathway analysis on correlated genes
+
+```{r }
+devtools::load_all(file.path('~/libs', 'maartenutils'))
+library(genesets)
+
+hallmark_gs <-
+  filter_gmt(
+    pattern = 'HALLMARK',
+    # gmt_pattern = 'msigdb',
+    gmt_pattern = 'mh.all',
+    type = 'symbols'
+  )
+caplist <- caplist_def %>%
+  c('via')
+names(hallmark_gs) <- names(hallmark_gs) %>%
+  stringr::str_replace('HALLMARK_', '') %>%
+  tolower() %>%
+  # stringr::str_replace('_', ' ') %>%
+  simple_cap(cap_first_word_only = T, caplist = caplist)
+names(hallmark_gs)
+```
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source('~/MirjamHoekstra/R/gsea.R')
+
+head(sort(cors), n = 30)
+
+p <- gsea_table(
+  cors[!is.na(cors)],
+  analysis_title = glue::glue('T-cell pressure correlation'),
+  min_p = .05,
+  max_pathways = 50,
+  colwidths = c(3, 3, 0.8, 0, 1.2),
+  return_grob = T,
+  collapse = FALSE,
+  pathways = hallmark_gs
+)
+
+print_plot_eval(grid.draw(p),
+  width = 17.4, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('T_cell_pressure_cor_Hallmark.pdf')))
+```
+
+## Look within experimental condition rather than across them
+
+Not in paper. Scatter plots of gene set scores. Do we also see a difference in
+TGFb/IFNy when stratifying purely on
+condition?
+
+```{r }
+colnames(M_cpm) <- sample_annotation$sample_name
+``` 
+
+```{r }
+MAGIC <- readr::read_csv(file.path(data_dir, '6743_Mix_T_MAGIC.csv'))
+MAGIC <- MAGIC[, -1] %>%
+  { .[, intersect(colnames(.), unlist(gene_sets))] }
+
+gs_p_dat <-
+  t(ComputeGeneSetScores(
+    M = t(MAGIC), 
+    genesets = gene_sets,
+    weighting_funcs = all_weighting_funcs[c('unweighted')]
+  )) %>%
+  as.data.frame() %>%
+  { . }
+
+p1 <- ggplot(gs_p_dat, 
+  aes_string(y = 'TGFb', x = 'IFNy', colour = 'TNFa')) + 
+  geom_point(alpha = .3, size = .5) +
+  geom_smooth(method = 'lm') +
+  scale_colour_viridis_c()
+print_plot_eval(print(p1),
+  width = 12, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('gs_scores_MAGIC.pdf')))
+
+p1 <- ggplot(gs_p_dat, 
+  aes_string(y = 'TGFb', x = 'IFNy', colour = 'TNFa')) + 
+  geom_point(alpha = .3, size = .5) +
+  geom_smooth(method = 'lm') +
+  scale_colour_viridis_c()
+print_plot_eval(print(p1),
+  width = 12, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('gs_scores_MAGIC.pdf')))
+```
+
+```{r, warning=FALSE}
+geneset_labels <- 
+  tibble::enframe(gene_sets, 'gs', 'gene') %>%
+  dplyr::mutate(gs = factor(gs, 
+      levels = c('TNFa', 'IFNy', 'TGFb'))) %>%
+  tidyr::unnest(gene)
+
+plot_corM <- function(corM, fn = file.path(out_dir,
+      glue::glue('exp6743_T_cell_MAGIC_corM.pdf'))) {
+  HM <- Heatmap(
+    corM,
+    # column_title = cn,
+    name = 'Correlation',
+    col <- circlize::colorRamp2(c(-1, 0, 1), 
+      c('navyblue', 'white', 'indianred3')),
+    left_annotation = rowAnnotation(
+      'Gene set' = anno_simple(as.character(geneset_labels$gs[
+        match(rownames(corM), geneset_labels$gene)]),
+      col = c('TNFa' = 'blue', 'IFNy' = 'red', 'TGFb' = 'yellow'),
+      gp = gpar(fontsize = 6))
+    ),
+    top_annotation = columnAnnotation(
+      'Gene set' = anno_simple(as.character(geneset_labels$gs[
+        match(rownames(corM), geneset_labels$gene)]),
+      col = c('TNFa' = 'blue', 'IFNy' = 'red', 'TGFb' = 'yellow'),
+      gp = gpar(fontsize = 6))
+    ),
+  )
+  print_plot_eval(
+    draw(HM, merge_legend = TRUE, heatmap_legend_side = 'top'),
+    # width = 17.4, 
+    width = 17.4, 
+    height = 15,
+    filename = fn
+  )
+}
+
+plot_corM(cor(MAGIC, method = 'pearson'), 
+  file.path(out_dir, glue::glue('exp6743_T_cell_corM_MAGIC.pdf'))
+)
+
+M %>%
+  { .[, intersect(colnames(.), unlist(gene_sets))] } %>%
+  cor(method = 'pearson') %>%
+  plot_corM(file.path(out_dir, glue::glue('exp6743_T_cell_corM.pdf')))
+```
+
+```{r }
+p_dat <- as.data.frame(MAGIC) %>%
+  add_umap()
+
+g1 = 'Galnt1'
+g2 = 'Fgl2'
+g3 = 'Cx3cl1'
+colnames(p_dat)
+
+g1 = 'Tnnt2'
+g2 = 'Loxl3'
+g2 = 'Bambi'
+g2 = 'Batf2'
+g2 = 'Clic5'
+g2 = 'Cx3cl1'
+g3 = 'Col12a1'
+g3 = 'Galnt1'
+p1 <- ggplot(p_dat, 
+  aes_string(x = g1, y = g2, colour = g3)) + 
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p2 <- ggplot(p_dat, 
+  aes_string(x = g1, y = g3, colour = g3)) + 
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p3 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g1)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p4 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g2)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p5 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g3)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+print_plot_eval(print((p3 + p4 + p5)/ (p1 + p2)),
+  width = 12, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('{g1}-{g2}-{g3}.pdf')))
+```
+
+```{r }
+p_dat <- as.data.frame(M) %>%
+  add_umap()
+
+g1 = 'Galnt1'
+g2 = 'Fgl2'
+g3 = 'Cx3cl1'
+
+g1 = 'Tnnt2'
+g2 = 'Loxl3'
+g2 = 'Bambi'
+g2 = 'Batf2'
+g2 = 'Cx3cl1'
+g3 = 'Col12a1'
+g3 = 'Galnt1'
+p1 <- ggplot(p_dat,
+  aes_string(x = g1, y = g2, colour = g3)) + 
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p3 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g1)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p4 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g2)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+p2 <- ggplot(p_dat, 
+  aes_string(x = 'UMAP1', y = 'UMAP2', colour = g3)) + 
+  gg_tabula_rasa +
+  geom_point(alpha = .3, size = .5) +
+  scale_colour_viridis_c()
+print_plot_eval(print((p3 + p4 + p2)/ p1),
+  width = 12, height = 10,
+  filename = file.path(out_dir,
+    glue::glue('orig_{g1}-{g2}-{g3}.pdf')))
+```
+
+# Panel F
+
+## Data loading and wrangling
+
+```{r load_genesets, cache=TRUE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+
+s_cols <- gen_cyto_inf_col_scale()
+pal <- c(
+  'none' = unname(s_cols['Unstimulated']),
+  # 'TGFb' = unname(s_cols['10 ng/ml TGFb']),
+  # 'TGFb' = unname(darken(s_cols['10 ng/ml TGFb'], factor=1.3)),
+  'TGFb' = 'blue',
+  'TGFb_not_clean' = unname(darken(s_cols['10 ng/ml TGFb'], factor=3)),
+  'IFNy' = unname(s_cols['100 ng/ml IFNy'])
+)
+
+mouse_genes <- tar_read(mono_reporters_mouse)$gene
+so <- tar_read(filtered_cleaned_so_6743_manual)
+if (F) {
+  sce <- tar_read(sce_mouse)
+} else {
+  sce <- tar_read(sce_mouse_var_genes)
+}
+library(miloR)
+library(SingleCellExperiment)
+# reducedDim(sce)
+
+Nhood_expression <- calcNhoodExpression(sce)
+## From fig6
+cors_fn <- file.path(rds_dir, 'DA_gene_cors_mouse_all_genes_var_genes.rds')
+cors <- readRDS(cors_fn)
+
+tM <- tar_read(tM_mouse)
+# tar_make(names = sce_mouse_var_genes)
+# limma_MRs <- tar_read(stringent_limma_MRs_mouse)
+sample_annotation <- tar_read(sample_annotation_mouse)
+# sample_annotation[, c('sample_name', 'stim_group')]
+exp5892 <- tar_read(bulk_5892_so)
+
+if (!exists('so') || so@meta.data$exp[1] != '6743') {
+  so <- tar_read(filtered_so_6743)
+  sg_levs <- c('Mix PBS', 'Ag-GAS + T', 'Mix + T')
+  stopifnot(all(so@meta.data$stim_group %in% sg_levs))
+  so@meta.data$stim_group <- factor(so@meta.data$stim_group,
+    levels = sg_levs)
+}
+
+## Remove IFNa
+limma_MR_params <- tar_read(limma_MR_params_mouse)
+M_cpm_5892 <- tar_read(M_cpm_mouse)
+tM <- tar_read(tM_mouse)[, -2]
+# tM <- tar_read(tM_mouse)
+# tM <- tar_read(tM_mouse)[, c(3, 5, 6, 7)]
+RC  <- tM >= limma_MR_params$LL
+NRC <- tM < limma_MR_params$UL
+MRs <- names(which(
+  apply(RC[, 1:5], 1, sum) == 1 &
+  apply(NRC[, 1:5], 1, sum) >= 4 &
+  # abs(apply(tM[, 4:5], 1, sum) - tM[, 6]) <= limma_MR_params$SD &
+  T
+))
+
+# non_combo_MRs <- names(which(
+#   apply(RC[, 1:5], 1, sum) == 1 &
+#   apply(NRC[, 1:5], 1, sum) >= 4
+# ))
+
+f_genes <- rownames(tar_read(f_gene_var_mouse))
+gene_sets <-
+  MRs %>%
+  # non_combo_MRs %>%
+  { tapply(., colnames(tM)[apply(RC[., 1:5], 1, which.max)], list) } %>%
+  map(~intersect(.x, f_genes)) %>%
+  { setNames(., gsub('.* ng/ml ', '', names(.))) }
+
+gene_sets[['IFNy']] <- mirjam_genes_220516$IFNy_mono
+gene_sets[['TNFa']] <- mirjam_genes_220516$TNFa_mono
+
+map(gene_sets, length)
+sum(map_int(gene_sets, length))
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+```
+
+
+```{r, warning=FALSE}
+source('~/MirjamHoekstra/R/init.R')
+
+l_img_dir <- file.path(img_dir, 'exp7296')
+# dir.create(l_img_dir)
+
+sfn <- file.path(data_dir, 'raw_exp_7296', 'genecounts.txt')
+expM_7296 <-
+  readr::read_tsv(sfn) %>%
+  rename_with(~tolower(.x)) %>%
+  rename_with(~gsub('\\d{1,2}_(.*)', '\\1', .x)) %>%
+  rename_with(~gsub('ifng', 'ifny', .x)) %>%
+  dplyr::select(-ensembl_gene_id, -start_position, -end_position,
+    -gene_biotype, -chromosome_name, -description) %>%
+  dplyr::rename(gene = external_gene_id)
+
+# colSums(M)
+# sort(M['Casp8', ])
+# sort(M['Cxcl10', ])
+```
+
+```{r, include = F, warning=FALSE}
+num_cols <- setdiff(colnames(expM_7296), 'gene')
+duration1 <- as.numeric(gsub('(\\d{1,2})h_.*$', '\\1', num_cols))
+duration2 <- as.numeric(gsub('.*_(\\d{1,2})h_.*$', '\\1', num_cols))
+stim1 <- factor(gsub('\\d{1,2}h_([^_]*)_.*$', '\\1', num_cols))
+stim2 <- factor(gsub('.*_([^_]*)$', '\\1', num_cols))
+repl_sg <- function(v) {
+  v[v=='ifny'] <- '100 ng/ml IFNy'
+  v[v=='tgfb'] <- '10 ng/ml TGFb'
+  v[v=='medium'] <- ''
+  v[v=='mix'] <- '100 ng/ml IFNy 10 ng/ml TGFb'
+  return(v)
+}
+sample_annotation_7296 <-
+  data.frame(
+    'sample_name' = setdiff(colnames(expM_7296), 'gene'),
+    'duration' = duration1,
+    'duration2' = duration2,
+    'm_sg' = repl_sg(as.character(stim1)),
+    'm_sg2' = repl_sg(as.character(stim2)),
+    sample_origin = include_na_lev(v='in_vitro', el='in_vivo'),
+    sample_type = include_na_lev('bulk', el='sc')
+  ) %>%
+  dplyr::arrange(duration, m_sg, m_sg2) %>%
+  { . }
+
+ru <- function(x) ifelse(x == '', 'Unstimulated', x)
+sample_annotation_7296$condition_name <- with(sample_annotation_7296, paste0(ru(m_sg), ' ', duration, 'h - ', ru(m_sg2), ' ', duration2, 'h'))
+
+if (FALSE) {
+  writeLines(
+    paste(sample_annotation_7296$condition_name, collapse=', '), 
+    con=file.path(img_dir, 'conditions.txt')
+  )
+}
+```
+
+```{r}
+sample_annotation_7296 <-
+  sample_annotation_7296 %>%
+  dplyr::arrange(m_sg2, duration, m_sg)
+
+expM_7296 <-
+  expM_7296[, match(c('gene', sample_annotation_7296$sample_name), colnames(expM_7296))]
+
+M_7296 <-
+  as.matrix(dplyr::select(expM_7296, -gene)) %>%
+  # { .[, match(sample_annotation_7296$sample_name, colnames(.))] } %>%
+  { set_colnames(., tolower(colnames(.))) } %>%
+  # { . }
+  set_rownames(expM_7296$gene) %>%
+  edgeR::DGEList() %>%
+  edgeR::calcNormFactors(method = 'TMM')
+
+M_cpm_7296 <- edgeR::cpm(M_7296)
+M_tmm_7296 <- as.matrix(RunTMM(M_7296))
+stopifnot(colnames(M_cpm_7296) == sample_annotation_7296$sample_name)
+if (T) {
+  ridx <- colnames(M_cpm_7296) != '6h_medium_24h_medium'
+  M_cpm_7296 <- M_cpm_7296[, ridx]
+  M_tmm_7296 <- M_tmm_7296[, ridx]
+  sample_annotation_7296 <- sample_annotation_7296[ridx, ]
+}
+```
+
+```{r}
+# Create a version of the data that is corrected for exposure duration. Should
+# have used SummarizedExperiment or something similar here, would have saved me
+# from some headaches.
+M_corr_7296 <- M_tmm_7296
+
+control_idxs <- which(
+  sample_annotation_7296$m_sg == '' &
+  sample_annotation_7296$m_sg2 == ''
+)
+# sample_annotation_7296[control_idxs, ]
+
+unique_durations <-
+  sample_annotation_7296[control_idxs, c('duration', 'duration2')]
+
+# sample_annotation_7296 %>%
+#   dplyr::distinct(duration, duration2) %>%
+#   dplyr::select(duration, duration2)
+
+deduct <- function(x, y) log2(x+.01) - log2(y+.01)
+
+all_idxs <- c()
+for (i in 1:nrow(unique_durations)) {
+  idxs <- which(
+    !(sample_annotation_7296$m_sg == '' & sample_annotation_7296$m_sg2 == '') &
+    sample_annotation_7296$duration == unique_durations[i, 'duration'] &
+    sample_annotation_7296$duration2 == unique_durations[i, 'duration2'])
+  all_idxs <- c(all_idxs, idxs)
+  M_corr_7296[, idxs] <-
+    deduct(M_tmm_7296[, idxs], M_tmm_7296[, control_idxs[i]])
+}
+
+sa_corr_7296 <- sample_annotation_7296[all_idxs, ]
+
+# sa_corr_7296[, c('sample_name', 'm_sg', 'm_sg2')]
+M_corr_7296 <- M_corr_7296[, all_idxs]
+dim(sa_corr_7296); dim(M_corr_7296)
+
+# intersect(sa_corr_7296$sample_name, colnames(M_corr_7296))
+# setdiff(sa_corr_7296$sample_name, colnames(M_corr_7296))
+# setdiff(colnames(M_corr_7296), sa_corr_7296$sample_name)
+
+sa_corr_7296 <- sa_corr_7296 %>% arrange(m_sg2, m_sg, duration)
+M_corr_7296 <- M_corr_7296[, sa_corr_7296$sample_name]
+stopifnot(sa_corr_7296$sample_name == colnames(M_corr_7296))
+
+sa_corr_7296[, c('sample_name', 'm_sg', 'm_sg2')]
+```
+
+```{r}
+M_5892 <- tar_read(M_mouse)
+sa_5892 <- tar_read(sample_annotation_mouse)
+sa_5892$sample_name <- tolower(sa_5892$sample_name)
+
+if (T) {
+  idxs <- which(!stringr::str_detect(
+      as.character(sa_5892$stim_group),
+      'IFNA|IL-2|A1 B2'))
+  length(idxs)
+  sa_5892 <- sa_5892[idxs, ]
+  M_5892 <- M_5892[, idxs]
+}
+# sa_5892$m_sg <- 'Unstimulated in vitro'
+# sa_5892$m_sg <- ''
+# sa_5892$m_sg2 <- sa_5892$stim_group
+# sa_5892$duration2 <- sa_5892$duration
+# sa_5892$duration <- 0L
+
+sa_5892 <- as.data.frame(order_stim_group(sa_5892))
+correct_conc <- function(v, pairs=list(
+  c('0.1 ng/ml TNFa', '1 ng/ml TNFa'),
+  c('0.1 ng/ml IFNy', '1 ng/ml IFNy'))) {
+  for (p in pairs) {
+    idxs <- match(levels(v), p)
+    if (any(idxs, na.rm = TRUE)) {
+      detected_order <- setdiff(idxs, NA)
+      if (detected_order != seq_along(p)) {
+        levels(v)[which(!is.na(idxs))] <- p
+      }
+    }
+  }
+  return(v)
+}
+# sa_5892$m_sg2 <- correct_conc(sa_5892$m_sg2)
+# sa_5892$stim_group <- correct_conc(sa_5892$stim_group)
+
+
+sa_5892$m_sg <- sa_5892$stim_group
+sa_5892$m_sg2 <- sa_5892$stim_group
+sa_5892$duration2 <- sa_5892$duration
+# sa_5892$m_sg[grepl('_1_ng_ml_ifng', sa_5892$sample_name)] <- '1 ng/ml IFNy'
+# sa_5892$m_sg[grepl('_0_01_ng_ml_ifng', sa_5892$sample_name)] <- '0.01 ng/ml IFNy'
+sa_5892[, c('sample_name', 'm_sg')]
+
+M_tmm_5892 <- as.matrix(RunTMM(M_5892))
+dim(M_tmm_5892)
+# tail(sort(colSums(M_tmm_5892)))
+```
+
+
+```{r}
+levels(sa_5892$m_sg2) <- 
+c('Unstimulated in vitro', '6000 U/ml IL-2', '5000 U/ml IFNA1',
+'10 ng/ml TGFb', '2 ng/ml lymphotoxin A1 B2', '0.1 ng/ml TNFa',
+'1 ng/ml TNFa', '10 ng/ml TNFa', '0.01 ng/ml IFNy', '1 ng/ml IFNy', 
+'100 ng/ml IFNy', '100 ng/ml IFNy 10 ng/ml TNFa')
+
+
+sa_5892$sample_name <- tolower(sa_5892$sample_name)
+sa_5892 <- dplyr::arrange(sa_5892, m_sg2, duration)
+sa_5892$sample_name
+M_tmm_5892 <- M_tmm_5892[, tolower(sa_5892$sample_name)]
+## Check whether these values are increasing
+grep('ifng', colnames(M_tmm_5892), value=T)
+```
+
+```{r}
+# Create a version of the data that is corrected for exposure
+# duration
+M_corr_5892 <- M_tmm_5892
+dim(M_corr_5892)
+
+control_idxs <- which(
+  sa_5892$m_sg2 == 'Unstimulated in vitro'
+)
+
+unique_durations <-
+  sa_5892[control_idxs, c('duration', 'duration2')]
+
+deduct <- function(x, y) log2(x+.01) - log2(y+.01)
+
+all_idxs <- c()
+for (i in 1:nrow(unique_durations)) {
+  idxs <- which(
+    sa_5892$m_sg2 != 'Unstimulated in vitro' &
+    sa_5892$duration == unique_durations[i, 'duration'] &
+    sa_5892$duration2 == unique_durations[i, 'duration2'])
+  all_idxs <- c(all_idxs, idxs)
+  M_corr_5892[, idxs] <-
+    deduct(M_tmm_5892[, idxs], M_tmm_5892[, control_idxs[i]])
+}
+length(all_idxs)
+
+sa_corr_5892 <- sa_5892[all_idxs, ]
+M_corr_5892 <- M_corr_5892[, tolower(sa_corr_5892$sample_name)]
+
+
+intersect(sa_corr_5892$sample_name, colnames(M_corr_5892))
+setdiff(sa_corr_5892$sample_name, colnames(M_corr_5892))
+setdiff(colnames(M_corr_5892), sa_corr_5892$sample_name)
+
+stopifnot(sa_corr_5892$sample_name == colnames(M_corr_5892))
+
+# ## Select down to the included samples in M_corr
+# sa_corr_5892 <- sa_corr_5892[match(colnames(M_corr_5892), sa_corr_5892$sample_name), ]
+
+sa_corr_5892 <- dplyr::arrange(sa_corr_5892, m_sg2, duration2, m_sg)
+M_corr_5892 <- M_corr_5892[, sa_corr_5892$sample_name]
+stopifnot(sa_corr_5892$sample_name == colnames(M_corr_5892))
+sa_corr_5892[, c('sample_name', 'm_sg', 'm_sg2')]
+sa_corr_5892$m_sg2 <- sa_corr_5892$m_sg
+```
+
+## Test reconstruction error
+
+How much do we need of each profile to
+reconstruct the Nhood expression profiles? Two metrics: the absolute
+size of weights, the reconstruction error
+
+```{r}
+bulk_experiment = '5892'
+bulk_experiment = '7296'
+if (bulk_experiment == '7296') {
+  bulk_M <- M_tmm_7296
+} else if (bulk_experiment == '5892'){
+  bulk_M <- M_tmm_5892
+}
+shared_genes <- intersect(
+  rownames(nhoodExpression(Nhood_expression)),
+  rownames(bulk_M)
+)
+
+NhoodE <- subset_feats(
+  nhoodExpression(Nhood_expression),
+  shared_genes)
+stopifnot(rownames(NhoodE) == shared_genes)
+if (T) {
+  NhoodE <- as.matrix(RunTMM(exp(NhoodE) - 1))
+} else {
+  dn <- dimnames(NhoodE)
+  NhoodE <- NhoodE %*% diag(10^6/colSums(NhoodE))
+  dimnames(NhoodE) <- dn
+}
+
+sort(colSums(NhoodE)); tail(rowSums(NhoodE))
+bulkE <- subset_feats(bulk_M, shared_genes)
+
+if (F) {
+  NhoodE <- t(scale(t(NhoodE)))
+  bulkE <- t(scale(t(bulkE)))
+}
+
+if (F) {
+  NhoodE <- log2(NhoodE+1)
+  bulkE <- log2(bulkE+1)
+}
+
+if (T) {
+  NhoodE <- log10(NhoodE+1)
+  bulkE <- log10(bulkE+1)
+}
+
+
+stopifnot(rownames(bulkE) == shared_genes)
+if (T) {
+} else {
+  dn <- dimnames(bulkE)
+  bulkE <- bulkE %*% diag(10^6/colSums(bulkE))
+  stopifnot(all(abs(colSums(bulkE) - 1e6) < 1e-5))
+  dimnames(bulkE) <- dn
+}
+
+rm_genes <- union(
+  names(which(apply(is.na(bulkE), 1, any))),
+  names(which(apply(is.na(NhoodE), 1, any))))
+shared_genes <- setdiff(shared_genes, rm_genes)
+
+bulkE <- subset_feats(bulkE, shared_genes)
+NhoodE <- subset_feats(NhoodE, shared_genes)
+# bulkE[which(is.na(bulkE), arr.ind=T)[1]]
+```
+
+```{r, warning=FALSE}
+compute_recon_error <- function(refs, verbose=F) {
+  pacman::p_load('progress')
+  pacman::p_load('glmnet')
+  errorM <- matrix(nrow=ncol(NhoodE), ncol=length(refs))
+  coefs <- matrix(nrow=ncol(NhoodE), ncol=ncol(refs[['full']])+1)
+
+  colnames(errorM) <- names(refs)
+  colnames(coefs) <- c('Intercept', colnames(refs[['full']]))
+
+  if (!verbose)
+    pb <- progress_bar$new(total = ncol(NhoodE))
+
+  for (i in 1:ncol(NhoodE)) {
+    # i <- which(colnames(NhoodE) == '40')
+    if (!verbose)
+      pb$tick()
+
+    y = NhoodE[, i, drop=F]
+
+    # fits = map(refs, function(bE) {
+    for (j in 1:length(refs)) {
+      # bE = refs[[1]]
+      bE = refs[[j]]
+      shared_genes <- intersect(rownames(y), rownames(bE))
+
+      cvfit <- cv.glmnet(
+        x=bE[shared_genes, ],
+        y=y[shared_genes, ], 
+        lower.limits=c(0),
+        family='gaussian', alpha=.99
+      )
+
+      if (F) {
+        library(e1071)
+        svmfit <- svm(
+          x=bE[shared_genes, ],
+          y=y[shared_genes, ], 
+          type="nu-regression",kernel="linear",nu=.25,
+          scale=F
+        )
+        #get and normalize coefficients
+        model <- svmfit
+        dim(model$SV)
+        q <- t(model$coefs) %*% model$SV
+        q[which(q<0)]<-0
+        w <- (q/sum(q))
+        ## Compute reconstruction error 'nusvm'
+        u <- sweep(bE[shared_genes, ], MARGIN=2, w, '*')
+        k <- apply(u, 1, sum)
+        nusvm <- sqrt((mean((k - y[shared_genes, ])^2)))
+        nusvm^2
+        devtools::install_github('Moonerss/CIBERSORT')
+        CIBERSORT::CoreAlg
+      }
+        
+      if (F && verbose) {
+        print(i); print(j)
+        print(coef(cvfit, s='lambda.1se'))
+      }
+      # error[i, j] <- cvfit$cvm[which.min(abs(cvfit$lambda - cvfit$lambda.1se))]
+      errorM[i, j] <- 
+        cvfit$cvm[which.min(abs(cvfit$lambda - cvfit$lambda.min))]
+
+      if (F) {
+        yhat <- predict(cvfit, bE)
+
+        p <- qplot(x=y[, 1], y=yhat, alpha=.1) +
+          scale_size_continuous(limits=c(.1)) +
+          geom_smooth(method='rlm')
+        print_plot_eval(call = { print(p) },
+          filename = file.path(l_img_dir, 'test.pdf'), 
+          width = 18, height = 20)
+      }
+
+      if (names(refs)[j] == 'full') {
+        coefs[i, ] <- as.vector(coef(cvfit, s='lambda.1se'))
+      }
+    }
+    if (verbose) {
+      # print(errorM[i, ])
+      # print(errorM[i, 'full'] / errorM[i, 'unstim_only'])
+    }
+  }
+
+  return(list('errorM'=errorM, 'coefs'=coefs))
+}
+
+
+
+if (bulk_experiment == '7296') {
+  all_bulk_Es <- list(
+    'full'        = bulkE,
+    'unstim_only' = bulkE[, grepl('medium.*medium', colnames(bulkE))],
+    'only_ifny'   = bulkE[, !grepl('tgfb|mix', colnames(bulkE))],
+    'only_tgfb'   = bulkE[, !grepl('ifny|mix', colnames(bulkE))]
+  )
+} else if (bulk_experiment == '5892') {
+  all_bulk_Es <- list(
+    'full'        = bulkE,
+    'unstim_only' = bulkE[, grepl('unstim', colnames(bulkE))],
+    'only_tnfa'   = bulkE[, grep('ifng|tgfb', colnames(bulkE), 
+      invert=TRUE, value=T)],
+    'only_ifny'   = bulkE[, grep('tnfa|tgfb', colnames(bulkE), 
+      invert=TRUE, value=T)],
+    'only_tgfb'   = bulkE[, grep('tnfa|ifng', colnames(bulkE), 
+      invert=TRUE, value=T)]
+  )
+}
+
+recon_error <- compute_recon_error(
+  refs=all_bulk_Es, 
+  # verbose=TRUE
+  verbose=F
+)
+
+summary(recon_error$errorM[, 'full'] / recon_error$errorM[, 'unstim_only'])
+```
+
+```{r }
+fn <- file.path(rds_dir, glue::glue('control_error_{bulk_experiment}.rds'))
+
+if (T || !file.exists(fn)) {
+  ## Select the same number of samples randomly that were selected
+  ds_numbers <- setdiff(sort(map_int(all_bulk_Es, ncol)), 36L)
+  sample_N <- ncol(all_bulk_Es[['full']])
+  
+  control_Es <- map(auto_name(ds_numbers), function(ds_N) {
+    c(
+      list('full' = bulkE[, setdiff(names(which(colSums(recon_error$coefs) > 0)), 'Intercept')]),
+      map(1:1000, ~bulkE[, sample(1:sample_N, ds_N, replace=F)])
+    )
+  })
+
+  control_error <- map(auto_name(control_Es), function(CEs) {
+    compute_recon_error(refs=CEs, verbose=F)
+  })
+  setNames(control_error) <- as.character(ds_numbers)
+
+  saveRDS(control_error, fn)
+} else {
+  control_error <- readRDS(fn)
+}
+```
+
+```{r }
+ord <- order(NH_test_DA$logFC)
+
+## Virtually no difference between full model and one that's selected
+## to the often selected reference samples
+summary(control_error$errorM[ord, 1] / recon_error$errorM[ord, 'full'])
+```
+
+```{r}
+## Minimal difference between full model and 11 randomly selected
+## reference samples
+n_dat <- sweep(
+  x=control_error$errorM[ord, 2:1001], MARGIN=1, 
+  STATS=recon_error$errorM[ord, 'full'], 
+  FUN='/')
+stopifnot(
+  control_error$errorM[ord, 2] / recon_error$errorM[ord, 'full'] ==
+  n_dat[, 1])
+summary(apply(n_dat, 2, median))
+```
+
+```{r }
+cn <- colnames(recon_error$coefs)
+
+sel_mode = 'full'
+sel_mode = 'high_prob'
+plotM <- recon_error$coefs[ord, cn != 'Intercept' & 
+  colSums(recon_error$coefs) > 0]
+plotM <- sweep(plotM, MARGIN=1, FUN='/', STATS=apply(plotM, 1, sum))
+if (sel_mode == 'high_prob')
+  plotM <- plotM[, apply(plotM, 2, sum) > 5]
+
+if (bulk_experiment == '7296') {
+  sa <- sample_annotation_7296[match(colnames(plotM),
+    sample_annotation_7296$sample_name), c('duration',
+    'm_sg', 'm_sg2', 'duration2')]
+} else if (bulk_experiment == '5892') {
+  sa <- sa_5892[match(colnames(plotM), tolower(sa_5892$sample_name)), 
+    c('duration', 'm_sg', 'm_sg2', 'duration2')]
+}
+sa$m_sg2 <- droplevels(sa$m_sg2)
+
+DE <- GE_vs_stim_dur(
+  M = plotM,
+  min_var = 0,
+  cell_width_mm = 2.5,
+  scale_data = 'none',
+  sa = sa,
+  column_clust_method = 'none',
+  row_clust_method = 'none',
+  color_name = 'Profile similarity',
+  plot_name = 'T_cell_associated_genes_mouse',
+  show_row_dend = FALSE,
+  show_column_dend = FALSE,
+  show_row_names = FALSE,
+  # N_hl_genes = 21,
+  N_hl_genes = NULL,
+  height = unit(15, 'cm'),
+  show_column_names = FALSE
+)
+
+print_plot_eval(call = {
+  draw(DE,
+    heatmap_legend_side = 'bottom',
+    annotation_legend_side='bottom')
+}, filename = file.path(l_img_dir,
+  glue::glue('{sel_mode}_lasso_Nhood_to_ref{bulk_experiment}.pdf')), width = 18, height = 25)
+```
+
+
+# Panel G
+
+
+```{r }
+q_ifny <- apply(cbind(
+    recon_error$errorM[ord, 'only_ifny'], 
+    control_error$errorM[ord, 2:1001]), 1, function(x)
+  ecdf(x[2:1001])(x[1]))
+
+q_tgfb <- apply(cbind(
+    recon_error$errorM[ord, 'only_tgfb'], 
+    control_error$errorM[ord, 2:1001]), 1, function(x)
+  ecdf(x[2:1001])(x[1]))
+
+
+make_y <- function(a = 'IFNy') {
+  as.character(glue::glue('Percentile of reconstruction error with only {a} and unstim reference profiles/\nwithin distribution of reconstruction errors with identical number of randomly reference profiles'))
+}
+
+p1 <- qplot(x=NH_test_DA$logFC[ord], 
+  y=q_ifny) +
+  xlab('logFC DA T cell') +
+  ylab(make_y(a='IFNy')) +
+  geom_smooth(method='lm')
+p2 <- qplot(x=NH_test_DA$logFC[ord], 
+  y=q_tgfb) +
+  xlab('logFC DA T cell') +
+  ylab(make_y(a='TGFb')) +
+  geom_smooth(method='lm') +
+  theme()
+print_plot_eval(call = {
+  print(p1 + p2)
+}, filename = file.path(l_img_dir, 'test.pdf'), 
+width = 12, height = 8)
+```
+
+```{r }
+ord <- order(NH_test_DA$logFC)
+
+make_y <- function(a = 'IFNy') {
+  as.character(glue::glue('Reconstruction error with only {a} and unstim profiles/\nreconstruction error with all reference profiles'))
+}
+
+# cut(q_ifny, breaks=c(0, .05, .95, 1), include.lowest=TRUE)
+
+make_p <- function(y='only_ifny', q=q_ifny, a='IFNy') {
+  q_cut <- cut(q, breaks=c(0, .025, .975, 1), include.lowest=TRUE)
+  q_cut2 <- cut(q, breaks=c(0, .025, 1), include.lowest=FALSE)
+  print(sum(q_cut2 == '(0, 0.025]', na.rm=TRUE))
+  # print(summary(q))
+  # print(summary(q_cut))
+  qplot(
+    x=NH_test_DA$logFC[ord], 
+    y=recon_error$errorM[ord, y] / recon_error$errorM[ord, 'full'],
+    alpha=.5,
+    # size=1/(q + 1e-3)) +
+    color=q_cut) +
+  xlab('logFC DA T cell') +
+  ylab(make_y(a=a)) +
+  scale_alpha_continuous(guide=FALSE) +
+  scale_color_manual(
+    name='permutation q', 
+    # breaks=c('<=0.05', 'none', '>-.95')
+    labels=c('Improved', 'Same', 'Worse'),
+    values=c('aquamarine3', 'grey50', 'brown3'),
+    breaks=c('[0,0.025]', '(0.025,0.975]', '(0.975,1]')
+  ) +
+  # scale_size_continuous(
+  #   name='log10 permutation q', 
+  #   labels=function(x) round(-log10(x), 3),
+  #   range=c(0.5, 2)
+  # ) +
+  # geom_smooth(method='lm', show.legend=F)
+  theme()
+}
+p1 <- make_p(y='only_ifny', q=q_ifny, a='IFNy')
+p2 <- make_p(y='only_tgfb', q=q_tgfb, a='TGFb')
+
+print_plot_eval(call = {
+  print(p1 + p2)
+}, filename = file.path(l_img_dir, 'test.pdf'), 
+width = 17.4, height = 10)
+```
+
+```{r, warning=FALSE}
+t.test(x = error[ord, 1], y = error[ord, 2])
+t.test(x = error[ord, 1], y = error[ord, 3], paired = TRUE)
+
+summary(error[ord, 2] / error[ord, 1])
+summary(error[ord, 3] / error[ord, 2])
+summary(error[ord, 3] / error[ord, 1])
+```

@@ -1,0 +1,581 @@
+---
+title: "Gene set based time inference"
+author: "Maarten Slagter"
+date: "`r Sys.time()`"
+output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    toc: false
+params:
+  experiment: 6369
+  so: NA
+  GS_p_dat: NA
+  cn_mode: NA
+  report_cp: NA
+  p_values: NA
+  all_univariate_gs_comps: NA
+---
+
+This Rmarkdown makes plots pertaining to time inference based on humble gene
+set scores. Set the idx variable to 8 for Figure 1F(experiment 6369); 9(?) for
+Figure 1G (experiment 6489); 17 for Figure 3D (experiment 6493); 
+
+```{r, warning=FALSE}
+options('plot_force_file' = TRUE)
+ 
+if (interactive()) {
+
+  source('~/MirjamHoekstra/R/init.R')
+  if (!exists('idx')) {
+    idx = 4 #5310 in vitro
+    idx = 8 #6369_simple_reference
+    idx = 16 #6601 simple
+    idx = 17 #6493 simple reference
+  }
+  source(file.path(r_dir, 'get_knit_params.R'))
+  tab <- targets_env$gs_param_table
+  load_prereqs(param_grid = tab, idx = idx)
+} else {
+  # attach(params)
+  experiment <- params$experiment
+  so <- params$so
+  GS_p_dat <- params$GS_p_dat
+  cn_mode <- params$cn_mode
+  report_cp <- params$report_cp
+  p_values <- params$p_values
+  all_univariate_gs_comps <- params$all_univariate_gs_comps
+}
+
+source(file.path(r_dir, 'GS_time_inference.R'))
+eval(time_inference_preproc)
+```
+
+# UMAP
+
+```{r umaps, warning=FALSE}
+p1 <- DimPlot(
+  so,
+  # group.by = group_var_cn_mode[[cn_mode]],
+  group.by = 'stim_group',
+  label.size = 2,
+  pt.size = 8, label = FALSE,
+  # raster.dpi = c(512, 512).
+  raster.dpi = 4 * c(512, 512),
+  split.by = group_vars[length(group_vars)],
+  # split.by = 'stim_group',
+  raster = TRUE) +
+  # scale_colour_stim_group(so@meta.data) +
+  theme_cyto_inf() +
+  ggtitle('') +
+  guides(color = guide_legend(ncol = 2))
+print_plot_eval(
+  plot(p1),
+  width = length(unique(so@meta.data$duration)) * 17.4 / 3,
+  height = 10,
+  filename = file.path(out_dir,
+    glue::glue('exp{report_cp}_UMAP.pdf')))
+```
+
+```{r umaps-stim-group, warning=FALSE}
+so_o <- tar_read_raw(glue::glue('filtered_cleaned_so_{experiment}'))
+
+p1 <- DimPlot(
+  so_o,
+  # group.by = group_var_cn_mode[[cn_mode]],
+  group.by = 'stim_group',
+  label.size = 2,
+  pt.size = 8, label = FALSE,
+  # raster.dpi = c(512, 512).
+  raster.dpi = 4 * c(512, 512),
+  split.by = group_vars[length(group_vars)],
+  # split.by = 'stim_group',
+  raster = TRUE) +
+  # scale_colour_stim_group(so@meta.data) +
+  theme_cyto_inf() +
+  ggtitle('') +
+  guides(color = guide_legend(ncol = 2))
+print_plot_eval(
+  plot(p1),
+  width = length(unique(so@meta.data$duration)) * 17.4 / 3,
+  height = 10,
+  filename = file.path(out_dir,
+    glue::glue('exp{report_cp}_var_genes_UMAP.pdf')))
+```
+
+
+# Expression heatmaps
+
+```{r expression-heatmaps}
+fn <- file.path(out_dir,
+    glue::glue('expression_heatmaps-{report_cp}.pdf'))
+mean_expression_heatmaps(GS_p_dat, o_fn = fn)
+```
+
+```{r expression-heatmaps-cn}
+exclude_gs <- 'HK_genes'
+exclude_gs <- c()
+if (length(remaining_group_vars) > 0) {
+  p <-
+    GS_p_dat %>%
+    tidyr::pivot_longer(cols = 1:35, names_to = 'gs') %>%
+    dplyr::group_by_at(c('condition_name', 'gs', remaining_group_vars)) %>%
+    dplyr::summarize(
+      feat = median(value),
+      perc_exp = mean(value > 0)
+    ) %>%
+    # dplyr::group_by(gs) %>%
+    # dplyr::mutate(feat = (feat - median(feat)) / IQR(feat)) %>%
+    dplyr::filter(!is.na(feat) & is.finite(feat)) %>%
+    dplyr::filter(!gs %in% exclude_gs) %>%
+    ggplot(aes(x = condition_name, y = gs,
+        fill = feat,
+        label = round(feat, 2),
+        )) +
+      rotate_x_labels(45) +
+      geom_tile() +
+      geom_text(size = 2.2) +
+      # scale_fill_viridis_c(direction = -1L) +
+      scale_x_discrete(name = 'Condition', expand = c(0, 0)) +
+      scale_y_discrete(name = 'Gene set', expand = c(0, 0)) +
+      facet_wrap(remaining_group_vars) +
+      guides(fill = 'none')
+
+  fn <- file.path(out_dir,
+    glue::glue('expression_heatmaps-{report_cp}-all_in_one.pdf'))
+  print_plot_eval(print(p),
+    width = 17.4, height = 20, filename = fn)
+}
+```
+
+# Violins
+
+Unfiltered vs. bottom 90 (with respect to a GS of interest, either
+'general' IFNy or TNFa) or top 10
+
+```{r violins, warning=FALSE}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+# GS_p_dat %>%
+#   dplyr::distinct(stim_group, duration, Ag, grp_i)
+
+  tidyr::expand_grid(
+    # perc = c(.75, .9),
+    # perc = c(.95),
+    # q_gs = all_fns[1:17],
+    # q_gs = all_fns[1],
+    # q_gs = paste0(c('IFNy.plateau', 'IFNy.late', 'TNFa.early',
+    #     'TNFa.6h.max', 'TNFa.late'), '.vanilla.unweighted.sum')
+    # q_gs = c('IFNy.plateau', 'IFNy.late', 'TNFa.early',
+    #     'TNFa.late', 'IFNy', 'TNFa', 'synergy')
+    q_gs = c('IFNy', 'TNFa', 'synergy')
+  ) %>%
+  # tidyr::expand_grid(
+  #   perc = NA_real_,
+  #   anchor_gs = NA_character_,
+  #   stim_group_constant = NA_character_,
+  #   duration_constant = NA_character_
+  # ) %>%
+  tidyr::expand_grid(
+    perc = c(.90),
+    # anchor_gs = c('IFNy', 'TNFa')
+    anchor_gs = c('IFNy')
+  ) %>%
+  {
+    if (F && length(setdiff(GS_p_dat$duration, c('Unknown', NA))) > 1) {
+      tidyr::expand_grid(
+        .,
+        duration_constant = c(levels(GS_p_dat$duration),
+          NA_character_),
+        stim_group_constant = c(levels(GS_p_dat$stim_group),
+          NA_character_),
+      )
+   } else {
+      tibble(., stim_group_constant = NA_character_,
+        duration_constant = NA_character_)
+    }
+  } %>%
+  # dplyr::filter(
+  #   is.na(stim_group_constant) | is.na(duration_constant)) %>%
+  dplyr::mutate(i = 1:n()) %>%
+  purrr::pmap(function(perc, q_gs, anchor_gs,
+      stim_group_constant, duration_constant, i) {
+    if (!q_gs %in% colnames(GS_p_dat)) {
+      rlang::warn(glue::glue('{q_gs} not found'))
+      return(NULL)
+    }
+
+    xl <- scale_y_continuous(limits = range(GS_p_dat[[q_gs]]))
+
+    if (i == 1) {
+      ## Make legend
+      mk_ann_GS_vln(
+        p_dat = GS_p_dat,
+        cn_mode = cn_mode,
+        fn = q_gs,
+        out_dir = out_dir,
+        experiment = experiment,
+        return_mode = 'file',
+        p_values = p_values,
+        plot_lgd = TRUE
+      )
+    }
+
+    format_gs <- function(x) stringr::str_replace_all(x, '/| ', '_')
+    anchor_gs_p <- format_gs(anchor_gs)
+    q_gs_p <- format_gs(q_gs)
+
+    l_dat <- GS_p_dat
+    p_y_loc <- 
+      quantile(l_dat[[as.character(q_gs)]], .9999, na.rm = T) * 1.00
+
+    # table(l_dat$Ag)
+    if (!is.na(stim_group_constant)) {
+      s_ <- tibble(stim_group = factor(stim_group_constant,
+          levels = levels(l_dat$stim_group)))
+      l_dat <- l_dat %>%
+        dplyr::right_join(s_, by = 'stim_group')
+    }
+    if (!is.na(duration_constant)) {
+      s_ <- tibble(duration = factor(duration_constant,
+          levels = levels(l_dat$duration)))
+      l_dat <- l_dat %>%
+        dplyr::right_join(s_, by = 'duration')
+      # table(l_dat$Ag)
+    }
+
+    gvars <- colnames(l_dat) %>%
+      intersect(c('stim_group', 'duration', 'Ag', 'frozen'))
+    N_conditions <- l_dat %>%
+      group_by_at(gvars) %>%
+      dplyr::summarize(n()) %>%
+      nrow()
+
+    p0 <-
+      mk_ann_GS_vln(
+        p_dat = l_dat,
+        cn_mode = cn_mode,
+        fn = q_gs,
+        experiment = experiment,
+        p_y_loc = p_y_loc,
+        return_mode = 'p',
+        p_values = p_values,
+        plot_lgd = FALSE
+      )
+    p0[[attr(p0, 'N_legends')+1]] <-
+      p0[[attr(p0, 'N_legends')+1]] + xl +
+      ggtitle(q_gs)
+
+    g1 <- retrieve_anchor_thresh(
+      dtf = GS_p_dat,
+      ref_condition = ref_condition,
+      perc = perc,
+      anchor_gs = anchor_gs
+    )
+    for (cn in colnames(ref_condition)) {
+      g1[[cn]] <- NULL
+    }
+
+    if ('duration' %in% colnames(g1) &&
+        is.factor(GS_p_dat$duration)) {
+      g1$duration <- factor(g1$duration,
+        levels = levels(GS_p_dat$duration))
+    }
+    # for (cn in intersect(colnames(g1), colnames(GS_p_dat))) {
+    #   as(g1[[cn]], class(GS_p_dat[[cn]]))
+    # }
+    if (all(is.na(g1$duration))) {
+      ofn <- file.path(out_dir,
+        glue::glue('filtered_violins-{report_cp}\\
+          {make_flag(q_gs_p)}\\
+          .pdf')
+        )
+      print_plot_eval(
+        print(p0),
+        width = 17.4,
+        # height = ifelse(experiment %in% c('6369', '6489'), 50, 25),
+        height = N_conditions + 6,
+        filename = ofn
+      )
+    } else {
+      p1 <-
+        l_dat %>%
+        dplyr::inner_join(
+          g1,
+          by = intersect(colnames(g1), colnames(l_dat))
+          ) %>%
+        dplyr::filter(.data[[anchor_gs]] < q9) %>%
+        mk_ann_GS_vln(
+          cn_mode = cn_mode,
+          fn = q_gs,
+          experiment = experiment,
+          p_y_loc = p_y_loc,
+          return_mode = 'p',
+          p_values = p_values,
+          plot_lgd = FALSE
+        ) +
+        plot_annotation(caption = '< than q9 of {anchor_gs_p}')
+      p1[[attr(p1, 'N_legends')+1]] <-
+        p1[[attr(p1, 'N_legends')+1]] + xl +
+        ggtitle(glue::glue('Lower than or equal to {perc*100}th \\
+            percentile of {anchor_gs} of unstim control'))
+
+      p2 <-
+        l_dat %>%
+        dplyr::inner_join(
+          g1,
+          by = intersect(colnames(g1), colnames(l_dat))
+          ) %>%
+        dplyr::filter(.data[[anchor_gs]] >= q9) %>%
+        mk_ann_GS_vln(
+          cn_mode = cn_mode,
+          fn = q_gs,
+          experiment = experiment,
+          p_y_loc = p_y_loc,
+          return_mode = 'p',
+          p_values = p_values,
+          plot_lgd = FALSE
+          ) +
+        plot_annotation(caption = '>= than q9 of {anchor_gs_p}')
+      p2[[attr(p2, 'N_legends')+1]] <-
+        p2[[attr(p2, 'N_legends')+1]] + xl +
+        # ggtitle(glue::glue('Top {scales::percent(1-perc)} w.r.t {anchor_gs}'))
+        ggtitle(glue::glue('Higher than {perc*100}th percentile of \\
+            {anchor_gs} of unstim control'))
+
+      stim_group_constant <- format_gs(stim_group_constant)
+      duration_constant <- format_gs(duration_constant)
+      ofn <- file.path(out_dir,
+        glue::glue('filtered_violins-{report_cp}\\
+          {make_flag(q_gs_p)}\\
+          {make_flag(stim_group_constant)}\\
+          {make_flag(duration_constant)}\\
+          {make_flag(anchor_gs_p)}\\
+          {make_flag(perc)}\\
+          .pdf')
+        )
+
+      print_plot_eval(
+        print(p0 / p1 / p2),
+        width = 17.4,
+        # height = ifelse(experiment %in% c('6369', '6489'), 50, 25),
+        height = N_conditions*3 + 6,
+        filename = ofn
+      )
+    }
+  })
+```
+
+# AUCs of distinguishing capabilities of gene sets
+
+All vs. all conditions
+
+```{r auroc-all-conditions-prep}
+library(tidyr)
+source('~/MirjamHoekstra/R/init.R')
+
+gst2gs <-
+  list(
+    'default' = names(tar_read(default_gene_sets)),
+    'time_informative' = names(tar_read(mirjam_genes)),
+    # 'time_informative' = names(tar_read(time_informative_genesets)),
+    'clustered_mono' = names(tar_read(clustered_mono_genes)),
+    'clustered_IFNy' = names(tar_read(clustered_IFNy_genes)),
+    'clustered_TNFa' = names(tar_read(clustered_TNFa_genes)),
+    'clustered_limma_MR' = names(tar_read(clustered_limma_MR_genes))
+  ) %>%
+  tibble::enframe('type', 'gs') %>%
+  tidyr::unnest(cols = gs)
+
+univariate_gs_comps <-
+  all_univariate_gs_comps %>%
+  # head() %>%
+  dplyr::right_join(gst2gs, by = 'gs') %>%
+  tidyr::unnest_wider(comp_levs) %>%
+  dplyr::mutate(
+    cn1 = map_chr(condition_name, ~.x[[1]]),
+    cn2 = map_chr(condition_name, ~.x[[2]])
+  ) %>%
+  dplyr::select(-condition_name, -comp_name, -type) %>%
+  dplyr::filter(!is.na(AUROC)) %>%
+  { . }
+```
+
+```{r auroc-all-conditions, warning=FALSE}
+# dplyr::rename(univariate_gs_comps, cn1 = cn2, cn2 = cn1) %>%
+#   head()
+expected_conditions <- 
+  unique(as.character(GS_p_dat[[group_var_cn_mode[[cn_mode]]]]))
+univariate_gs_comps
+```
+
+# Time scatters
+
+```{r time-scatters-norm}
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+
+if (experiment %in% c('6489', '6369', '6493')) {
+  ## First make plot of unnormalized ref
+  subs_conditions <- list(ref_condition, subs_condition,
+    subs_condition, subs_condition)
+  ref_conditions <- list(NULL, ref_condition, ref_condition,
+        ref_condition)
+  tibble(
+    description = c('unstim_ref', 'all_cells', 'top10', 'top10'),
+    perc = c(NA_real_, NA_real_, .90, .90),
+    anchor_gs = c(NA_character_, NA_character_, 'IFNy', 'TNFa')
+  ) %>%
+  dplyr::mutate(i = 1:n()) %>%
+  purrr::pmap(function(description, perc, anchor_gs, i) {
+    p_dat <-
+      GS_p_dat %>%
+      nest_by(duration) %>%
+      dplyr::summarize(
+        data %>%
+        normalize_gs(
+          ref_condition = ref_conditions[[i]]
+        ) %>%
+        filter_anchor_thresh(
+          anchor_gs = anchor_gs,
+          mode = '>=',
+          ref_condition = ref_conditions[[i]],
+          perc = perc
+        ) %>%
+        { . }
+      ) %>%
+      { . }
+
+    plots <-
+      p_dat %>% {
+        if (!is.null(subs_conditions[[i]]))
+          dplyr::right_join(., subs_conditions[[i]])
+        else .
+      } %>%
+      make_all_tgs_scatter_plots(
+        colour_var = 'duration',
+        balanced_axes = F,
+        comps = tribble(
+          ~x_var, ~y_var,
+          'IFNy', 'TNFa',
+          'IFNy.plateau', 'IFNy.late',
+          'IFNy.late', 'IFNy.plateau',
+          'TNFa.early', 'TNFa.late'
+        )
+      )
+
+    fn <- file.path(out_dir,
+      glue::glue('time_gs_scatters\\
+        {make_flag(experiment)}\\
+        {make_flag(description)}\\
+        {make_flag(anchor_gs)}\\
+        {make_flag(perc)}.pdf')
+      )
+    plot_panel_layout(
+      plots = plots, ncol = 2, nrow = 3, clear_redundant_legends = F,
+      width = 17.4, height = 25, filename = fn, labels = NULL
+    )
+  })
+}
+# print_plot_eval(
+#   print(patchwork::wrap_plots(
+#     plots, ncol = 2, nrow = 3, guides = 'collect'
+#   )),
+#   width = 17.4, height = 25,
+#   filename = fn)
+```
+
+Predictive capacity of gene set scores
+
+```{r, eval=F}
+b_so <- tar_read(bulk_5029_so)
+b_so_s <- ComputeGeneSetScores(
+  so = b_so,
+  weighting_funcs = all_weighting_funcs['unweighted'],
+  genesets = tar_read(all_genesets),
+  simplify_names = F
+)
+b_dat <- assay2dtf(b_so_s, assay = 'GS')
+colnames(b_dat) <-
+  stringr::str_replace(colnames(b_dat),
+    '.vanilla.unweighted.sum', '')
+
+s_dat <- tar_read(GS_p_dat_5310_simple_reference)
+colnames(s_dat) <-
+  stringr::str_replace(colnames(s_dat),
+    '.vanilla.unweighted.sum', '')
+
+e_vars <- c('TNFa', 'IFNy', 'synergy', 'IFNy.late', 'IFNy.plateau', 'TNFa.early', 'TNFa.late')
+# cor(t(b_dat[, e_vars]), t(s_dat[, e_vars]))
+
+# M <- cbind(t(b_dat[, e_vars]), t(s_dat[, e_vars])) %>%
+#   as.matrix()
+# class(t(s_dat[, e_vars]))
+# outer(t(t(b_dat[, e_vars])), t(t(s_dat[, e_vars])), cosine)
+# cosine(M)
+
+CM <- matrix_cosine(x = t(b_dat[, e_vars]), y = t(s_dat[, e_vars]))
+
+gamma <- 1e-5
+gamma <- 2e0
+CMe <- exp(-gamma * CM)
+CM_NN <- apply(CMe, 2, function(x) ifelse(x == max(x), 1, 0))
+stopifnot(apply(CM_NN, 2, sum) >= 1)
+
+reg_vars <- c('duration', 'ifn_conc', 'tnf_conc')
+ref_sa <- extract_sa(b_so_s, 
+  meta_fields = reg_vars) %>%
+  numerify_regressors() %>%
+  norm_regressors()
+
+query_sa <- s_dat %>%
+  dplyr::select(any_of(reg_vars)) %>%
+  numerify_regressors() %>%
+  norm_regressors()
+
+error_Ms <- map(auto_name(reg_vars), function(rv) {
+  outer(ref_sa[[rv]], query_sa[[rv]], '-')
+})
+
+by_var <- c('condition_name')
+query_rsa <- s_dat %>%
+  dplyr::select(any_of(by_vars), duration, stim_group) %>%
+  order_condition_name()
+query_rsa[[by_var]]
+
+WM <- CM_NN 
+parm_grid <- tidyr::expand_grid(
+  cn = levels(query_rsa[[by_var]]),
+  rv = reg_vars
+) 
+# sum_funcs <- list(median)
+parm_grid$error <- parm_grid %>%
+  purrr::pmap(function(cn, rv) {
+    ## Select cells corresponding to condition
+    idxs <- which(query_rsa[[by_var]] == cn)
+    if (length(idxs) == 0) return(NULL)
+    ## Slice error matrix and multiply by weight matrix
+    {
+      error_Ms[[rv]][, idxs] * WM[, idxs]
+    } %>%
+    apply(2, sum) %>%
+    # map_dfc(sum_funcs, ~.x(.))
+    { . }
+  })
+parm_grid <- parm_grid %>%
+  dplyr::filter(!sapply(error, is.null))
+parm_grid$error_median <- map_dbl(parm_grid$error, function(x) {
+  if (is.null(x)) return(NA_real_)
+  tryCatch(median(abs(x), na.rm = T), error = function(e) { NA_real_ }) 
+})
+parm_grid <- parm_grid %>%
+  dplyr::filter(!sapply(error_median, is.na))
+parm_grid$error_q1 <- map_dbl(parm_grid$error, function(x) {
+  if (is.null(x)) return(NA_real_)
+  tryCatch(quantile(abs(x), .1, na.rm = T), error = function(e) { NA_real_ }) 
+})
+parm_grid$error_q9 <- map_dbl(parm_grid$error, function(x) {
+  if (is.null(x)) return(NA_real_)
+  tryCatch(quantile(abs(x), .9, na.rm = T), error = function(e) { NA_real_ }) 
+})
+```

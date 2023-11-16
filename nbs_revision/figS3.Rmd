@@ -1,0 +1,229 @@
+# Panel A
+
+
+```{r}
+source(file.path(Sys.getenv('r_dir'), 'gsea.R'))
+
+o_fn <- file.path(rds_dir, 'limma_5029_efit.rds')
+tM <- readRDS(o_fn)$t
+
+if (F) {
+  library(genesets)
+  devtools::load_all(file.path('~/libs', 'maartenutils'))
+  devtools::load_all(file.path('~/libs', 'genesets'))
+  
+  hallmark_gs <- filter_gmt(
+    pattern = 'HALLMARK', gmt_pattern = 'msigdb', type = 'symbols')
+  caplist <- caplist_def %>% c('via')
+  names(hallmark_gs) <-
+    names(hallmark_gs) %>%
+    stringr::str_replace('HALLMARK_', '') %>%
+    tolower() %>%
+    # stringr::str_replace('_', ' ') %>%
+    simple_cap(cap_first_word_only = T, caplist = caplist) %>%
+    { paste0('HM ', .) } %>%
+    { . }
+  names(hallmark_gs)
+} else {
+  hallmark_gs <- tar_read(human_HM_genesets)
+}
+```
+
+```{r, eval=F}
+source('~/MirjamHoekstra/R/init.R')
+
+hm_gs <- c(
+   'HM TNFa signaling via NFkB',
+   # 'HM TGF beta signaling',
+   'HM Interferon gamma response')
+colnames(tM) <-
+  stringr::str_replace(colnames(tM), 'stim_group', '')
+disp_cols <- c('10 ng/ml TNFa', '100 ng/ml IFNy',
+  '100 ng/ml IFNy 10 ng/ml TNFa', '1/2 SN')
+
+gst2gs <-
+  c(mono_genes, hallmark_gs[hm_gs]) %>%
+  map(~intersect(.x, rownames(tM))) %>%
+  { . }
+# unname(unlist(gst2gs[gene_sel]))
+# intersect(unique(unname(unlist(gst2gs[gene_sel]))), rownames(tM))
+gene_sel = c('TNFa', 'HM TNFa signaling via NFkB')
+gene_sel = setdiff(names(gst2gs), 'HM TGF beta signaling')
+gene_sel = names(gst2gs)
+# gst2gs <- gst2gs[c(1, 3, 2, 4)]
+# gst2gs <- gst2gs[c(1, 3, 2, 5, 4)]
+
+if (F) {
+  doubled_hm_genes <- names(which(table(unlist(hallmark_gs[hm_gs])) > 1))
+  map(hallmark_gs[hm_gs], ~doubled_hm_genes %in% .x)
+}
+
+disp_genes <-
+  unname(unique(unlist(gst2gs[gene_sel]))) %>%
+  # intersect(rownames(tM)) %>%
+  { . }
+gst2gs <-
+  gst2gs %>%
+  map(~intersect(.x, disp_genes)) %>%
+  purrr::discard(~length(.x) == 0)
+
+stopifnot(length(unique(unlist(gst2gs))) == length(disp_genes))
+M <- gen_overlap_matrix(gst2gs)
+stopifnot(nrow(M) == length(disp_genes))
+M_bin_w <- M_bool_to_int(M[disp_genes, ]) %*% diag(2^seq(1, ncol(M)))
+M_bin_print <- M_bool_to_chr(M[disp_genes, ])
+# M_bin_print <- M_bool_to_int(M[disp_genes, ])
+M_s <- tM[disp_genes, disp_cols]
+stopifnot(all(apply(M_s, 1, var) > 0))
+gene_group <- 
+  factor(rowSums(M_bin_w)) %>%
+  { . }
+gene_group <- sort(gene_group)
+stopifnot(rownames(M_bin_w) == disp_genes)
+gene_ordering <- 
+  cluster_within_but_not_between_groups(
+    t(M_s[names(gene_group), ]), gene_group)
+## This should be monotonic
+stopifnot(diff(factor_to_numeric(gene_group[gene_ordering])) >= 0)
+GS_membership_HM <- Heatmap(
+  matrix = M_bin_print[gene_ordering, ],
+  # cluster_rows = dend2,
+  cluster_rows = FALSE,
+  # row_split = length(unique(gene_group)),
+  row_split = gene_group[gene_ordering],
+  show_row_names = FALSE,
+  show_column_dend = FALSE,
+  row_gap = unit(2, 'mm'),
+  col = c('Included' = 'black', 'Excluded' = 'grey90'),
+  show_row_dend = F,
+  width = unit(ncol(M)/4, 'cm'),
+  cluster_columns = F,
+  show_column_names = T,
+  name = 'Gene set membership'
+)
+if (F) {
+  print_plot_eval(draw(GS_membership_HM),
+    width = 17.4, height = 20,
+    filename = file.path(out_dir, glue::glue('tM_with_hallmark.pdf'))
+  )
+}
+
+HM <- gen_HM(
+  M = M_s[rownames(GS_membership_HM@matrix), ],
+  name = 'Limma moderated t',
+  cluster_rows = F,
+  width = unit(ncol(M_s)/2, 'cm'),
+  cluster_columns = F,
+  show_column_names = T
+)
+# print_plot_eval(draw(HM),
+#   width = 17.4, height = 20,
+#   filename = file.path(out_dir,
+#     glue::glue('tM_with_hallmark.pdf')))
+if (F) {
+  print_plot_eval(draw(GS_membership_HM),
+    width = 17.4, height = 10,
+    filename = file.path(out_dir, glue::glue('test.pdf')))
+}
+print_plot_eval(
+  draw(GS_membership_HM + HM, merge_legend = TRUE),
+  # width = 17.4,
+  width = 17.4,
+  height = 15,
+  filename = file.path(out_dir,
+    glue::glue('human_MR_vs_HALLMARK_tM.pdf')))
+```
+
+# Panel B & C
+
+```{r }
+mono_genes <-
+  list(
+    'default' = tar_read(default_gene_sets)
+  ) %>%
+  # unlist(recursive = F) %>%
+  purrr::flatten() %>%
+  { .[!stringr::str_detect(names(.), 'HK')] } %>%
+  { .[!stringr::str_detect(names(.), 'CXCL10')] } %>%
+  { .[!stringr::str_detect(names(.), '6h.max')] } %>%
+  { .[!stringr::str_detect(names(.), 'TNFa.plateau')] } %>%
+  { .[!stringr::str_detect(names(.), 'synergy')] } %>%
+  # unlist() %>%
+  { setNames(., paste0('MR ', names(.))) } %>%
+  { . }
+```
+
+```{r, warning=FALSE}
+source(file.path(Sys.getenv('r_dir'), 'gsea.R'))
+
+plots <-
+  tibble(
+    idx = c(9, 8, 10, 5),
+    HALLMARK_name = c(
+      'HM Interferon gamma response',
+      'HM TNFa signaling via NFkB',
+      NA_real_, NA_real_
+    ),
+    mono_genes = list(
+      mono_genes[['MR IFNy']], 
+      mono_genes[['MR TNFa']], 
+      NULL, NULL),
+    q = c(.999, .999, .999, .999)
+  ) %>%
+  purrr::pmap(
+    tM_vs_HALLMARK,
+    tM = tM,
+    hallmark_gs = hallmark_gs
+  )
+
+plot_panel_layout(
+  plots = plots,
+  labels = NULL,
+  ncol = 1, nrow = 3,
+  filename = file.path(out_dir, 'SI_human_5029_vs_hallmark.pdf')
+  # filename = file.path(out_dir, 'SI_human_5029_vs_hallmark.png')
+)
+```
+
+# Panel D
+
+# Panel E
+
+# Panel F
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 5 #5310 in vitro
+tab <- targets_env$gs_param_table
+experiment <- get_obj('experiment')
+load_prereqs(param_grid = tab, idx = idx)
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('100 ng/ml IFNy 10 ng/ml TNFa - 24h - SC digest',
+      'Unstimulated in vitro - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+# levels(GS_p_dat$condition_name)
+
+for (fn in c('IFNy', 'TNFa', 'synergy')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
