@@ -1,0 +1,113 @@
+---
+title: "Figure 2"
+author: "Maarten Slagter"
+---
+
+# Panel C
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 3 #5310 in vivo
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = idx)
+experiment <- get_obj('experiment')
+
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names() %>%
+  dplyr::filter(sample_origin == 'in_vivo') %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+for (fn in c('IFNy', 'TNFa', 'synergy', 'IFNy.late', 'IFNy.plateau',
+    'TNFa.early')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      fn_add = '5310_in_vivo',
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+source(file.path(Sys.getenv('r_dir'), 'get_knit_params.R'))
+tab <- targets_env$gs_param_table
+load_prereqs(param_grid = tab, idx = 1L)
+# get_obj('all_univariate_gs_comps')
+
+
+gst2gs <-
+  list(
+    'default' = names(tar_read(default_gene_sets)),
+    'HM' = names(tar_read(human_HM_genesets))[c(1, 6, 19)]
+  ) %>%
+  tibble::enframe('type', 'gs') %>%
+  tidyr::unnest(cols = gs)
+
+univariate_gs_comps <-
+  get_obj('all_univariate_gs_comps') %>%
+  dplyr::right_join(gst2gs, by = 'gs') %>%
+  tidyr::unnest_wider(comp_levs) %>%
+  dplyr::mutate(
+    cn1 = map_chr(condition_name, ~.x[[1]]),
+    cn2 = map_chr(condition_name, ~.x[[2]])
+  ) %>%
+  dplyr::select(-condition_name, -comp_name, -type) %>%
+  dplyr::filter(!is.na(AUROC)) %>%
+  { . }
+
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+univariate_gs_auc_plots(
+  univariate_gs_comps,
+  expected_conditions = unique(univariate_gs_comps$cn1)[1:4],
+  o_fn = file.path(out_dir,
+    glue::glue('auroc_all_conditions_5310.pdf')))
+
+
+cns <- colnames(get_obj('GS_p_dat'))[c(36, 41, 54, 53)]
+cns <- colnames(get_obj('GS_p_dat'))[c(1)]
+cns <- names(tar_read(human_HM_genesets))[c(1, 6, 19)]
+
+cns <- paste0(cns, '.vanilla.unweighted.sum')
+cns %in% colnames(get_obj('GS_p_dat'))
+
+for (fn in cns) {
+  for (plot_lgd in c(F)) {
+    mk_ann_GS_vln(
+      p_dat = get_obj('GS_p_dat') %>%
+        dplyr::filter(sample_origin == 'in_vitro') %>%
+        dplyr::filter(sc_digestion == FALSE)
+      ,
+      cn_mode = 'all',
+      fn = fn,
+      fn_add = '5310_in_vitro',
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
+```{r }
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names() %>%
+  dplyr::filter(sample_origin == 'in_vitro') %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+
+compute_all_pairwise_medians(GS_p_dat) %>%
+  write_tsv(file.path(out_dir, 'pairwise_gs_comp_stats_5310_in_vitro.tsv'))
+```
