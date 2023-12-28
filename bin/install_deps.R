@@ -25,20 +25,24 @@ try_install <- function(p) {
 }
 
 
+cit_pkgs <- c('devtools', 'ComplexHeatmap', 'credentials', 'milo', 'sctransform', 'voom', 'glmnet')
 pkgs <- c('miloR', 'car',
   'parsnip', 'tidymodels', 'yardstick', 'ranger', 'kknn', 
   'devtools', 'curl', 'targets', 'ggpubr', 'ArrayExpress',
   'umap', 'progressr', 'rsample', 
   'Hmisc', 
-  'preprocessCore', 'envnames',
+  'glmnet',
+  'preprocessCore', 'envnames', 'voom',
   'pracma', 'targets', 
   'DESeq2', 'wesanderson',
   'biomaRt', 'furrr', 'fgsea', 'naturalsort',
   'tidyverse', 'knitr', 
   'tikzDevice',
-  'SingleCellExperiment', 'limma', 'edgeR', 'ROCR',
+  'scran', 'SingleCellExperiment', 'limma', 'edgeR', 'ROCR',
   'devtools', 'Seurat', 'GGally', 'knitr', 'pacman', 'circlize',
   'NMF', 'e1071')
+already_cited <- c('targets', 'glmnet', 'milo', 'sctransform', 'voom')
+
 
 for (p in pkgs) {
   try_install(p)

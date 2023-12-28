@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 
 cd ~/MirjamHoekstra
 CONFIGFILE=~/MirjamHoekstra/_targets.R

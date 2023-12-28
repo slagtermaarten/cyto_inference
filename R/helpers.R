@@ -253,89 +253,6 @@ load_genesets <- function() {
 }
 
 
-#' Compile filenames for Seurat objects
-#'
-#'
-compile_so_fns <- function(
-  experiment = '5310',
-  lookup_mode = F,
-  filtering_opts = list(
-    min_UMI = 1000, max_percent_mt = 100, min_fd_cc = 2,
-    max_hashtag_evenness = 1),
-  ...) {
-  dots <- list(...)
-  filtering_opts <- filtering_opts %>% replace(names(dots), dots)
-  fns <- with(filtering_opts,
-    tibble(
-      vanilla = file.path(rds_dir,
-        glue::glue('exp{experiment}_sc.rds')),
-      HTO_QC = add_flag(vanilla,
-        glue::glue('-HTO_QC{make_flag(min_fd_cc)}\\
-          {make_flag(max_hashtag_evenness)}')),
-      ## --- SC QC filtered variations
-      filtered = add_flag(HTO_QC,
-        glue::glue('-filtered{make_flag(max_percent_mt)}\\
-          {make_flag(min_UMI)}')),
-      filtered_ig = add_flag(filtered, '-ig'),
-      filtered_ig_mono = add_flag(filtered, '-ig_mono'),
-      filtered_cleaned = add_flag(filtered, '-cleaned'),
-      filtered_ig_cleaned = add_flag(filtered_ig, '-cleaned'),
-      filtered_ig_mono_cleaned = add_flag(filtered_ig_mono,
-        '-cleaned'),
-      ## --- Mito reg variations
-      filtered_mito_reg =
-        add_flag(filtered, '-mito_reg'),
-      filtered_ig_mito_reg =
-        add_flag(filtered_ig, '-mito_reg'),
-      filtered_ig_mono_mito_reg =
-        add_flag(filtered_ig_mono, '-mito_reg'),
-      filtered_cleaned_mito_reg =
-        add_flag(filtered_cleaned, '-mito_reg'),
-      filtered_ig_cleaned_mito_reg =
-        add_flag(filtered_ig_cleaned, '-mito_reg'),
-      filtered_ig_mono_cleaned_mito_reg =
-        add_flag(filtered_ig_mono_cleaned, '-mito_reg'),
-      ## --- Markers
-      marker = add_flag(filtered_cleaned, '-outlying_cluster_markers')
-    )
-  )
-
-  if (lookup_mode) {
-    ## When looking up files, cleaned files that do not exist (because
-    ## nothing was to be cleaned from their source files) should be
-    ## replaced with their uncleaned counterparts. Symlinks
-    ## would have probably been more pretty but alas
-    cleaned_fns <- fns %>%
-      dplyr::select(matches('cleaned'))
-
-    non_existent_cleaned_files <- cleaned_fns %>%
-      purrr::map_lgl(~file.exists(.x)) %>%
-      { names(.)[. == F] }
-
-    for (fn in non_existent_cleaned_files) {
-      fns[[fn]] <- str_replace(fns[[fn]], '-cleaned', '')
-    }
-
-    second_check <- fns[non_existent_cleaned_files] %>%
-      purrr::map_lgl(~file.exists(.x)) %>%
-      all
-
-    if (!second_check) browser()
-    # stopifnot(second_check)
-  }
-
-  fns <- fns %>%
-    # dplyr::select(-filtered_cleaned, -filtered_ig_cleaned,
-    #   -filtered_ig_mono_cleaned) %>%
-    as.list() %>%
-    { . }
-
-  fns
-}
-# compile_so_fns(experiment = '5310')
-# compile_so_fns(experiment = '5310', min_UMI = 10)
-
-
 call_with <- function(f,
   args = purrr::map(ls(), ~get(.x, envir = parent.frame()))) {
   if (missing(args) || is.null(args) || !is.list(args))
@@ -653,18 +570,6 @@ detach_package <- function(pkg, character.only = FALSE) {
     detach(search_item, unload = TRUE, character.only = TRUE)
   }
 }
-
-
-unload_cytokineinference <- function() {
-  detach_package(cytokineinference)
-  DLL_ov <- getLoadedDLLs()
-  for (fp in purrr::map_chr(
-      DLL_ov[names(DLL_ov) == 'cytokineinference'],
-      ~.x[['path']])) {
-    dyn.unload(fp)
-  }
-}
-# unload_cytokineinference()
 
 
 gen_random_M <- function(r = 10000L, c = 10L, s = 2) {
@@ -1016,7 +921,7 @@ convert_ensg_to_gene_symbol <- function(arg = rna_data, reverse = F,
   df_test <-
     any(c('matrix', 'data.frame', 'data.table') %in% class(arg))
   mapping <- fread(
-    file.path(raw_10x_support_dir, 'gene_symbol_to_gene.tsv'),
+    file.path(Sys.getenv('raw_10x_support_dir'), 'gene_symbol_to_gene.tsv'),
     header = F)
   setnames(mapping, c('ensembl_gene_id', 'external_gene_id'))
   if (reverse) {

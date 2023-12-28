@@ -1,358 +1,229 @@
-```{r}
-source('~/MirjamHoekstra/R/init.R')
-genelist_V <- 14
-genelist_V <- 15
-version_idx = 10
-library(furrr)
-plan(multicore, workers = 32)
-load_gs_data(version_idx, redo = F)
-# saveRDS(selection_crit_table_u, file.path(rds_dir,
-#     'selection_crit_table_u.rds') )
+# Panel A
 
-table(selection_crit_table_u$geneset)
-table(selection_crit_table$geneset)
-# selection_crit_table_u %>%
-#   dplyr::filter(gene %in% read_geneset('202109_mirjam_genes')) %>%
-#   dplyr::select(gene, geneset, timecor_median)
-
-out_dir <- file.path(Sys.getenv('img_dir'), 'fig1')
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-```
-
-```{r, print_gene_stats, fig.height=25/2.54, fig.width = 17/2.54, warning=FALSE}
-source('~/MirjamHoekstra/R/init.R')
-source('~/MirjamHoekstra/R/select_genes.R')
-
-c_version_idx = 10
-selection_crit_table_u <-
-  update_selection_crit_table_gs(
-    selection_crit_table = tar_read(gs_data_step_pre),
-    version_idx = c_version_idx
-  )
-
-SLU <-
-  selection_crit_table_u %>%
-  dplyr::mutate(geneset = forcats::fct_recode(geneset, 
-      'AND synergy' = 'mono synergy',
-      'Anti-synergy' = 'anti-synergy',
-      'Lowly expressed' = 'lowly expressed',
-      'Non-informative' = 'blacklist',
-      'Synergy' = 'synergy',
-      'Mono reporter' = 'mono reporter',
-      'Unlabeled' = 'none',
-      'Other informative' = 'whitelist')) %>%
-  dplyr::mutate(geneset = forcats::fct_expand(geneset, 
-      'IFNy mono reporter', 'TNFa mono reporter')) %>%
-  # dplyr::mutate(geneset = if_else(geneset == 'Mono reporter', 
-  #     'test', as.character(geneset))
-  # ) %>%
-  dplyr::mutate(geneset = if_else(geneset == 'Mono reporter', 
-      ifelse(TNFa_bias > .5, 'TNFa mono reporter', 
-        'IFNy mono reporter'),
-      as.character(geneset))
-  ) %>%
-  # forcats::fct_recode(geneset, "Other informative" = "whitelist")
-  # forcats::fct_recode(geneset, `whitelist` = 'test')
-  dplyr::mutate(geneset = factor(geneset, levels = c(
-      'Unlabeled' ,
-      'Non-informative',
-      'Mono reporter',
-      'IFNy mono reporter', 'TNFa mono reporter',
-      'Synergy',
-      'AND synergy' ,
-      'Anti-synergy',
-      'Lowly expressed',
-      'Other informative'
-  ))) %>%
-  { . }
-```
-
-```{r, echo = FALSE options}
-version_idx <- 20L
-
-corrections <-
-  purrr::map_dfr(0:(version_idx-1), function(c_version_idx) {
-  fo <- maartenutils::gen_file_overview(
-    file.path(data_raw_dir, 'gene_lists', 'corrections'),
-    pat = glue('v{c_version_idx}'),
-    include_full = T) %>%
-    dplyr::arrange(short_fn)
-  out <- data.frame()
-  for (corr_fn in fo$full_fn) {
-    if (!file.exists(corr_fn)) next()
-    fh <- readr::read_tsv(corr_fn, show_col_types = F)
-    # if (!'geneset' %in% colnames(fh)) browser()
-    if (ncol(fh) != 3) browser()
-    if (nrow(fh) == 0) next()
-    cn <- grep('geneset_corrected', colnames(fh), value = T)
-    if (length(cn) == 0) browser()
-    fh[[cn]] <- recode_subs(fh[[cn]])
-    fh <- fh[, c('gene', 'geneset_corrected')]
-    out <- dplyr::bind_rows(out, fh)
-  }
-  if (!null_dat(out)) {
-    out <- dplyr::distinct(out[nrow(out):1, ], gene,
-      .keep_all = TRUE)
-    out$i <- c_version_idx
-  }
-  return(out)
-})
-
-corrections <-
-  corrections %>%
-  dplyr::left_join(SLU[, c('gene', 'TNFa_bias')]) %>%
-  dplyr::rename(geneset = geneset_corrected) %>%
-  dplyr::mutate(geneset = fct_recode(geneset, 
-      'AND synergy' = 'mono synergy',
-      'Non-informative' = 'blacklist',
-      'Mono reporter' = 'mono reporter',
-      # 'Anti-synergy' = 'anti-synergy',
-      # 'Lowly expressed' = 'lowly expressed',
-      # 'Synergy' = 'synergy',
-      'Other informative' = 'anti-synergy',
-      'Other informative' = 'lowly expressed',
-      'Other informative' = 'synergy',
-      'Unlabeled' = 'none',
-      'Other informative' = 'whitelist')) %>%
-  dplyr::mutate(geneset = fct_expand(geneset, 
-      'IFNy mono reporter', 'TNFa mono reporter')) %>%
-  # dplyr::mutate(geneset = if_else(geneset == 'Mono reporter', 
-  #     'test', as.character(geneset))
-  # ) %>%
-  dplyr::mutate(geneset = if_else(geneset == 'Mono reporter', 
-      ifelse(TNFa_bias > .5, 'TNFa mono reporter', 
-        'IFNy mono reporter'),
-      as.character(geneset))
-  ) %>%
-  # forcats::fct_recode(geneset, "Other informative" = "whitelist")
-  # forcats::fct_recode(geneset, `whitelist` = 'test')
-  dplyr::mutate(geneset = factor(geneset, levels = c(
-      'Unlabeled' ,
-      'Non-informative',
-      'Mono reporter',
-      'IFNy mono reporter', 'TNFa mono reporter',
-      'Synergy',
-      'AND synergy' ,
-      'Anti-synergy',
-      'Lowly expressed',
-      'Other informative'
-  ))) %>%
-  # dplyr::rename(geneset_corrected = geneset) %>%
-  { . }
-
-evo_p_dtf <- 
-  corrections %>%
-  dplyr::group_by(i, geneset) %>%
-  dplyr::summarize(N = n()) %>%
-  dplyr::group_by(geneset) %>%
-  dplyr::mutate(N = cumsum(N)) %>%
-  dplyr::mutate(i = factor(i, levels = 0:max(as.integer(i)))) %>%
-  { . }
-
-# levels(evo_p_dtf$i)
-# last(levels(evo_p_dtf$i))
-# SLU$geneset
-# levels(SLU$geneset)
-
-extra_rows <- 
-  evo_p_dtf %>%
-  dplyr::filter(i == last(levels(i))) %>%
-  dplyr::pull(geneset) %>%
-  { setdiff(unique(evo_p_dtf$geneset), .) } %>%
-  { dplyr::right_join(evo_p_dtf, tibble(geneset = .)) } %>%
-  dplyr::slice_tail(n = 1) %>%
-  dplyr::mutate(i = last(levels(i)))
-
-evo_p_dtf <- 
-  evo_p_dtf %>%
-  rbind(extra_rows) %>%
-  dplyr::mutate(i = factor(i, levels = 0:max(as.integer(i)))) %>%
-  { . }
-
-evo_p <-  
-  ggplot(evo_p_dtf, aes(x = i, y = N, group = geneset,
-      colour = geneset)) +
-    geom_line(alpha = .5) +
-    geom_point() +
-    # scale_colour_manual(
-    #   name = 'Annotated gene class',
-    #   values = gs_cols[unique(corrections$geneset)]
-    # ) +
-    xlab('Cycle iteration') +
-    ylab('# genes') +
-    theme(legend.position = 'right') +
-    guides(colour = guide_legend(title.position = 'top', ncol = 1))
-print_plot_eval(
-  {
-    print(evo_p)
-  },
-  width = 8.7, height = 8,
-  filename = file.path(out_dir,
-    glue::glue('gs_annotation_evolution.pdf')))
-```
-
-```{r, warning=FALSE}
-if (interactive() && !test_rendering())
-  source('~/MirjamHoekstra/R/init.R')
-
-plots <- list(
-  plot_genestats(
-    source_dat = selection_crit_table_u,
-    x_var = 'timecor_median',
-    y_var = 'max_diff_from_us'
-  ),
-  # plot_genestats(
-  #   source_dat = selection_crit_table_u,
-  #   x_var = 'max_diff_combo_from_us',
-  #   y_var = 'max_diff_tnf_from_us'
-  # ),
-  # plot_genestats(
-  #   source_dat = selection_crit_table_u,
-  #   x_var = 'min_diff_from_us',
-  #   y_var = 'max_diff_ifn_from_us'
-  # ),
-  plot_genestats(
-    source_dat = selection_crit_table_u,
-    x_var = 'max_diff_ifn_from_us',
-    y_var = 'max_diff_tnf_from_us'
-  ),
-  plot_genestats(
-    source_dat = selection_crit_table_u,
-    x_var = 'max_t', y_var = 'max_beta'
-  ),
-  plot_genestats(
-    source_dat = selection_crit_table_u,
-    x_var = 'Amax', y_var = 'max_diff_from_us'
-  )
-  # plot_genestats(
-  #   source_dat = selection_crit_table_u,
-  #   x_var = 'max_diff_from_us',
-  #   y_var = 'TNFa_bias'
-  # ),
-  # plot_genestats(
-  #   source_dat = selection_crit_table_u,
-  #   x_var = 'timecor_median',
-  #   y_var = 'TNFa_bias'
-  # )
-) %>%
-# map(~.x +
-#   ggtitle(glue('After round {c_version_idx} of RF/manual addition'))
-{ . }
-
-print_plot_eval(
-  print(wrap_plots(
-    c(list(plot_spacer(), evo_p + guides(colour = 'none')), plots),
-    tag_level = 'new',
-    ncol = 2, nrow = 3, guides = 'collect')),
-  width = 17.4, height = 25,
-  filename = file.path(out_dir,
-    glue::glue('gene_selection_stats.pdf')))
-```
-
-```{r, warning=FALSE}
-if (interactive() && !test_rendering())
-  source('~/MirjamHoekstra/R/init.R')
-
-plots <- 
-  map(c('timecor_median', 'max_diff_from_us', 'max_diff_ifn_from_us',
-    'max_diff_tnf_from_us', 'max_t', 'max_beta', 'Amax', 'TNFa_bias'), 
-  plot_gene_stats_boxplot, source_dat = SLU)
-
-x_lab <- plots[[1]]$labels$x
-plots <- map(plots, function(.x){ .x$labels$x <- ''; .x })
-print_plot_eval(
-  { 
-    print(wrap_plots(
-      plots, ncol = 2, nrow = 4, guides = 'collect')) 
-    grid::grid.draw(grid::textGrob(x_lab, y = 0.02, 
-        gp = gpar(fontsize = 8)))
-  },
-  width = 17.4, height = 25,
-  filename = file.path(out_dir,
-    glue::glue('gene_selection_stats.pdf')))
-```
 
 ```{r}
-if (interactive() && !test_rendering())
-  source('~/MirjamHoekstra/R/init.R')
+source(file.path(Sys.getenv('r_dir'), 'gsea.R'))
 
-p <- plot_gene_stats_boxplot(y_var = 'TNFa_bias', source_dat = SLU_l)
-print_plot_eval(
-  print(p),
-  width = 8.7, height = 8,
-  filename = file.path(out_dir,
-    glue::glue('gene_selection_stats.pdf')))
-```
+o_fn <- file.path(rds_dir, 'limma_5029_efit.rds')
+tM <- readRDS(o_fn)$t
 
-Example line plots of the various gene sets
-
-```{r, example_line_plots, fig.height=25/2.54, fig.width = 17/2.54, warning=FALSE}
-source('~/MirjamHoekstra/R/init.R')
-
-y_scale = 'log2'
-y_scale = 'linear'
-
-library(future)
-plan(sequential)
-plan(multicore, workers = 32)
-
-SLU_l <- SLU %>%
-  # dplyr::mutate(geneset = fct_recode(geneset, 
-  #   'Other informative' = 'Anti-synergy',
-  #   'Other informative' = 'Lowly expressed',
-  #   'Other informative' = 'Synergy')
-  # ) %>%
-  dplyr::mutate(geneset = forcats::fct_relevel(
-    geneset, c(
-      'Unlabeled', 
-      'Non-informative', 
-      'Anti-synergy',
-      'Lowly expressed',
-      'Synergy',
-      'Mono reporter',
-      'IFNy mono reporter', 'TNFa mono reporter', 'AND synergy', 
-      'Other informative')
-  ))
-levels(SLU_l$geneset)
-
-for (pred_label in setdiff(unique(SLU_l$geneset), 'Unlabeled')) {
-  print(pred_label)
-
-  sel_feats <- 
-    SLU_l %>%
-    dplyr::filter(geneset == pred_label) %>%
-    dplyr::mutate(
-      p_title = glue('{gene} - {geneset}')
-    ) %>%
-    dplyr::slice_sample(n = 2) %>%
-    # dplyr::slice_head(n = 2) %>%
+if (F) {
+  library(genesets)
+  devtools::load_all(file.path('~/libs', 'maartenutils'))
+  devtools::load_all(file.path('~/libs', 'genesets'))
+  
+  hallmark_gs <- filter_gmt(
+    pattern = 'HALLMARK', gmt_pattern = 'msigdb', type = 'symbols')
+  caplist <- caplist_def %>% c('via')
+  names(hallmark_gs) <-
+    names(hallmark_gs) %>%
+    stringr::str_replace('HALLMARK_', '') %>%
+    tolower() %>%
+    # stringr::str_replace('_', ' ') %>%
+    simple_cap(cap_first_word_only = T, caplist = caplist) %>%
+    { paste0('HM ', .) } %>%
     { . }
-
-  # selection_crit_table_u %>%
-  #   dplyr::filter(geneset == 'synergy')
-  # all_consistent_genes
-
-  # if (F || pred_label != 'synergy') {
-  #   feats %<>% dplyr::filter(exp5310_consistent == T)
-  # }
-
-  p_feats <- pull(sel_feats, gene)
-  p_titles <- pull(sel_feats, p_title)
-  if (test_rendering()) {
-    idxs <- sample(1:min(20L, length(p_feats)))
-    p_feats %<>% { .[idxs] }
-    p_titles %<>% { .[idxs] }
-  }
-
-  print(exp_dynamics_panel(
-    features = p_feats,
-    plot_titles = p_titles,
-    merge_cn = 'sample_name',
-    y_scale = y_scale,
-    version = glue('220830_example_{pred_label}_{y_scale}'),
-    redo = T,
-    leave_out_sn = T)
-  )
-
+  names(hallmark_gs)
+} else {
+  hallmark_gs <- tar_read(human_HM_genesets)
 }
 ```
+
+```{r, eval=F}
+source('~/MirjamHoekstra/R/init.R')
+
+hm_gs <- c(
+   'HM TNFa signaling via NFkB',
+   # 'HM TGF beta signaling',
+   'HM Interferon gamma response')
+colnames(tM) <-
+  stringr::str_replace(colnames(tM), 'stim_group', '')
+disp_cols <- c('10 ng/ml TNFa', '100 ng/ml IFNy',
+  '100 ng/ml IFNy 10 ng/ml TNFa', '1/2 SN')
+
+gst2gs <-
+  c(mono_genes, hallmark_gs[hm_gs]) %>%
+  map(~intersect(.x, rownames(tM))) %>%
+  { . }
+# unname(unlist(gst2gs[gene_sel]))
+# intersect(unique(unname(unlist(gst2gs[gene_sel]))), rownames(tM))
+gene_sel = c('TNFa', 'HM TNFa signaling via NFkB')
+gene_sel = setdiff(names(gst2gs), 'HM TGF beta signaling')
+gene_sel = names(gst2gs)
+# gst2gs <- gst2gs[c(1, 3, 2, 4)]
+# gst2gs <- gst2gs[c(1, 3, 2, 5, 4)]
+
+if (F) {
+  doubled_hm_genes <- names(which(table(unlist(hallmark_gs[hm_gs])) > 1))
+  map(hallmark_gs[hm_gs], ~doubled_hm_genes %in% .x)
+}
+
+disp_genes <-
+  unname(unique(unlist(gst2gs[gene_sel]))) %>%
+  # intersect(rownames(tM)) %>%
+  { . }
+gst2gs <-
+  gst2gs %>%
+  map(~intersect(.x, disp_genes)) %>%
+  purrr::discard(~length(.x) == 0)
+
+stopifnot(length(unique(unlist(gst2gs))) == length(disp_genes))
+M <- gen_overlap_matrix(gst2gs)
+stopifnot(nrow(M) == length(disp_genes))
+M_bin_w <- M_bool_to_int(M[disp_genes, ]) %*% diag(2^seq(1, ncol(M)))
+M_bin_print <- M_bool_to_chr(M[disp_genes, ])
+# M_bin_print <- M_bool_to_int(M[disp_genes, ])
+M_s <- tM[disp_genes, disp_cols]
+stopifnot(all(apply(M_s, 1, var) > 0))
+gene_group <- 
+  factor(rowSums(M_bin_w)) %>%
+  { . }
+gene_group <- sort(gene_group)
+stopifnot(rownames(M_bin_w) == disp_genes)
+gene_ordering <- 
+  cluster_within_but_not_between_groups(
+    t(M_s[names(gene_group), ]), gene_group)
+## This should be monotonic
+stopifnot(diff(factor_to_numeric(gene_group[gene_ordering])) >= 0)
+GS_membership_HM <- Heatmap(
+  matrix = M_bin_print[gene_ordering, ],
+  # cluster_rows = dend2,
+  cluster_rows = FALSE,
+  # row_split = length(unique(gene_group)),
+  row_split = gene_group[gene_ordering],
+  show_row_names = FALSE,
+  show_column_dend = FALSE,
+  row_gap = unit(2, 'mm'),
+  col = c('Included' = 'black', 'Excluded' = 'grey90'),
+  show_row_dend = F,
+  width = unit(ncol(M)/4, 'cm'),
+  cluster_columns = F,
+  show_column_names = T,
+  name = 'Gene set membership'
+)
+if (F) {
+  print_plot_eval(draw(GS_membership_HM),
+    width = 17.4, height = 20,
+    filename = file.path(out_dir, glue::glue('tM_with_hallmark.pdf'))
+  )
+}
+
+HM <- gen_HM(
+  M = M_s[rownames(GS_membership_HM@matrix), ],
+  name = 'Limma moderated t',
+  cluster_rows = F,
+  width = unit(ncol(M_s)/2, 'cm'),
+  cluster_columns = F,
+  show_column_names = T
+)
+# print_plot_eval(draw(HM),
+#   width = 17.4, height = 20,
+#   filename = file.path(out_dir,
+#     glue::glue('tM_with_hallmark.pdf')))
+if (F) {
+  print_plot_eval(draw(GS_membership_HM),
+    width = 17.4, height = 10,
+    filename = file.path(out_dir, glue::glue('test.pdf')))
+}
+print_plot_eval(
+  draw(GS_membership_HM + HM, merge_legend = TRUE),
+  # width = 17.4,
+  width = 17.4,
+  height = 15,
+  filename = file.path(out_dir,
+    glue::glue('human_MR_vs_HALLMARK_tM.pdf')))
+```
+
+# Panel B & C
+
+```{r }
+mono_genes <-
+  list(
+    'default' = tar_read(default_gene_sets)
+  ) %>%
+  # unlist(recursive = F) %>%
+  purrr::flatten() %>%
+  { .[!stringr::str_detect(names(.), 'HK')] } %>%
+  { .[!stringr::str_detect(names(.), 'CXCL10')] } %>%
+  { .[!stringr::str_detect(names(.), '6h.max')] } %>%
+  { .[!stringr::str_detect(names(.), 'TNFa.plateau')] } %>%
+  { .[!stringr::str_detect(names(.), 'synergy')] } %>%
+  # unlist() %>%
+  { setNames(., paste0('MR ', names(.))) } %>%
+  { . }
+```
+
+```{r, warning=FALSE}
+source(file.path(Sys.getenv('r_dir'), 'gsea.R'))
+
+plots <-
+  tibble(
+    idx = c(9, 8, 10, 5),
+    HALLMARK_name = c(
+      'HM Interferon gamma response',
+      'HM TNFa signaling via NFkB',
+      NA_real_, NA_real_
+    ),
+    mono_genes = list(
+      mono_genes[['MR IFNy']], 
+      mono_genes[['MR TNFa']], 
+      NULL, NULL),
+    q = c(.999, .999, .999, .999)
+  ) %>%
+  purrr::pmap(
+    tM_vs_HALLMARK,
+    tM = tM,
+    hallmark_gs = hallmark_gs
+  )
+
+plot_panel_layout(
+  plots = plots,
+  labels = NULL,
+  ncol = 1, nrow = 3,
+  filename = file.path(out_dir, 'SI_human_5029_vs_hallmark.pdf')
+  # filename = file.path(out_dir, 'SI_human_5029_vs_hallmark.png')
+)
+```
+
+# Panel D
+
+# Panel E
+
+# Panel F
+
+```{r }
+if (interactive() && !test_rendering())
+  source('~/MirjamHoekstra/R/init.R')
+source(file.path(r_dir, 'get_knit_params.R'))
+idx = 5 #5310 in vitro
+tab <- targets_env$gs_param_table
+experiment <- get_obj('experiment')
+load_prereqs(param_grid = tab, idx = idx)
+GS_p_dat <- get_obj('GS_p_dat') %>%
+  order_condition_name() %>%
+  format_gs_names()
+levels(GS_p_dat$condition_name)
+GS_p_dat <- GS_p_dat %>%
+  dplyr::filter(condition_name %in% 
+    c('100 ng/ml IFNy 10 ng/ml TNFa - 24h - SC digest',
+      'Unstimulated in vitro - 24h',
+      '100 ng/ml IFNy 10 ng/ml TNFa - 24h')) %>%
+  dplyr::mutate(condition_name = droplevels(condition_name))
+# levels(GS_p_dat$condition_name)
+
+for (fn in c('IFNy', 'TNFa', 'synergy')) {
+  for (plot_lgd in c(T, F)) {
+    mk_ann_GS_vln(
+      p_dat = GS_p_dat,
+      cn_mode = 'all',
+      fn = fn,
+      out_dir = out_dir,
+      experiment = '5310',
+      return_mode = 'file',
+      p_values = 'all',
+      plot_lgd = plot_lgd
+    )
+  }
+}
+```
+
